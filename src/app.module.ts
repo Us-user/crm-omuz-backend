@@ -8,6 +8,7 @@ import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
 import { GroupScheduleModule } from './group-schedule/group-schedule.module';
+import { GroupStudentsModule } from './group-students/group-students.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
@@ -41,6 +42,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     GroupsModule,
     GroupMentorsModule,
     GroupScheduleModule,
+    GroupStudentsModule,
     SyllabusModule,
     HealthModule,
   ],

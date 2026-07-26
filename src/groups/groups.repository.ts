@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { DurationUnit, GroupFormat, GroupStatus, Prisma } from '@prisma/client';
+import { GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,6 +25,9 @@ const GROUP_SELECT = {
   // при завершении запустит автовыпуск (ТЗ 5.11).
   course: { select: { id: true, title: true, isLastCourse: true } },
   branch: { select: { id: true, name: true } },
+  // «Набрано» из «Required students = набрано/вместимость» (ТЗ 5.5). Считаются
+  // только действующие членства: покинувший курс в наборе группы не стоит.
+  _count: { select: { students: { where: { status: GroupStudentStatus.ACTIVE } } } },
 } satisfies Prisma.GroupSelect;
 
 export type GroupRow = Prisma.GroupGetPayload<{ select: typeof GROUP_SELECT }>;
@@ -138,6 +142,15 @@ export class GroupsRepository {
    */
   countScheduleSlotsWithRoom(groupId: string): Promise<number> {
     return this.prisma.scheduleSlot.count({ where: { groupId, roomId: { not: null } } });
+  }
+
+  /**
+   * Сколько всего членств у группы — действующих и закрытых (ТЗ 5.5).
+   * Нужно удалению: закрытая строка это учебная история студента, и уносить
+   * её каскадом вместе с группой нельзя.
+   */
+  countStudents(groupId: string): Promise<number> {
+    return this.prisma.groupStudent.count({ where: { groupId } });
   }
 
   create(input: GroupWriteInput): Promise<GroupRow> {

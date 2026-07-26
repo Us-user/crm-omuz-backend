@@ -68,6 +68,15 @@ export class GroupDto {
   })
   capacity!: number | null;
 
+  @ApiProperty({
+    example: 12,
+    description:
+      'Сколько студентов учится в группе сейчас — вторая половина «Required students = ' +
+      'набрано/вместимость» (ТЗ 5.5). Покинувшие и завершившие не считаются. ' +
+      'Набор сверх `capacity` не запрещён: это плановая цифра, а не предел.',
+  })
+  enrolledCount!: number;
+
   @ApiProperty({ enum: GroupStatus })
   status!: GroupStatus;
 

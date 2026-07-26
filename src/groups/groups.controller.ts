@@ -23,9 +23,10 @@ import { CreateGroupDto, GroupDeletedDto, GroupDto, GroupQueryDto, UpdateGroupDt
 import { GroupsService } from './groups.service';
 
 /**
- * Учебные группы (ТЗ 5.5). Менторы группы живут отдельным модулем
- * (`GroupMentorsController`, `/groups/{groupId}/mentors`); расписание и состав
- * студентов — отдельные маршруты той же фазы, они добавятся следующими кусками.
+ * Учебные группы (ТЗ 5.5). Детальная страница группы собрана из отдельных
+ * модулей со своими маршрутами: менторы (`GroupMentorsController`),
+ * расписание (`GroupScheduleController`) и состав (`GroupStudentsController`).
+ * Здесь — сама группа и её счётчик «набрано» (`enrolledCount`).
  */
 @ApiTags('Groups')
 @ApiBearerAuth('access-token')

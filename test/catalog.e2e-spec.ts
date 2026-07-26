@@ -88,6 +88,8 @@ class InMemoryCatalogStore {
   readonly rooms = new Map<string, RoomRow>();
   readonly courses = new Map<string, CourseRow>();
   readonly groups = new Map<string, GroupRow>();
+  /** Сколько всего членств у группы — на это упирается её удаление (ТЗ 5.5). */
+  private readonly groupStudentCounts = new Map<string, number>();
 
   /** Люди, закреплённые за филиалом: нужны только как счётчики в карточке. */
   private readonly people = new Map<string, { students: number; employees: number }>();
@@ -180,6 +182,9 @@ class InMemoryCatalogStore {
       capacity: null,
       status: GroupStatus.RECRUITING,
       telegramUrl: null,
+      // Состава у групп в этом наборе нет: он живёт в `group-students.e2e-spec.ts`
+      // со своим хранилищем. Здесь важно лишь, что счётчик доезжает до ответа.
+      _count: { students: 0 },
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
       ...overrides,
     };
@@ -429,6 +434,19 @@ class InMemoryCatalogStore {
     return Promise.resolve(this.groups.get(id) ?? null);
   }
 
+  /**
+   * Состав группы числом. Сам модуль состава живёт в `group-students.e2e-spec.ts`
+   * со своим хранилищем; здесь важно только то, что удаление группы в это число
+   * упирается, — и подставить его достаточно.
+   */
+  enroll(groupId: string, count: number): void {
+    this.groupStudentCounts.set(groupId, count);
+  }
+
+  countGroupStudents(id: string): Promise<number> {
+    return Promise.resolve(this.groupStudentCounts.get(id) ?? 0);
+  }
+
   findGroupByName(branchId: string, name: string): Promise<{ id: string; name: string } | null> {
     const found = [...this.groups.values()].find(
       (group) => group.branch.id === branchId && group.name.toLowerCase() === name.toLowerCase(),
@@ -662,6 +680,7 @@ describe('Справочники учебного контура (e2e, хран�
         // Тоже расписание: перенос группы в другой филиал упирается в занятия
         // в аудиториях, и это проверяет `group-schedule.e2e-spec.ts`.
         countScheduleSlotsWithRoom: () => Promise.resolve(0),
+        countStudents: (id: string) => store.countGroupStudents(id),
         create: (input: GroupWriteInput) => store.createGroup(input),
         update: (id: string, input: Partial<GroupWriteInput>) => store.updateGroup(id, input),
         delete: (id: string) => store.deleteGroup(id),
@@ -1385,6 +1404,32 @@ describe('Справочники учебного контура (e2e, хран�
       await send('delete', `/api/v1/courses/${courseId}`, courses).expect(409);
       await send('delete', `/api/v1/groups/${group.id}`, groups).expect(200);
       await send('delete', `/api/v1/courses/${courseId}`, courses).expect(200);
+    });
+
+    it('409 на удаление группы с составом — с числом студентов в сообщении', async () => {
+      const token = await actor('Permission.Groups.Delete');
+      const { branchId, courseId } = scene();
+      const group = store.addGroup(branchId, courseId, 'Frontend-1');
+      store.enroll(group.id, 12);
+
+      const response = await send('delete', `/api/v1/groups/${group.id}`, token).expect(409);
+
+      expect(response.body.error.message).toContain('(12)');
+      expect(store.groups.has(group.id)).toBe(true);
+    });
+
+    it('«набрано» отдаётся рядом с вместимостью в списке групп (ТЗ 5.5)', async () => {
+      const token = await actor('Permission.Groups.Views');
+      const { branchId, courseId } = scene();
+      store.addGroup(branchId, courseId, 'Frontend-1', {
+        capacity: 16,
+        _count: { students: 12 },
+      });
+
+      const response = await get('/api/v1/groups', token).expect(200);
+      const body = response.body as { data: { capacity: number; enrolledCount: number }[] };
+
+      expect(body.data[0]).toMatchObject({ capacity: 16, enrolledCount: 12 });
     });
   });
 

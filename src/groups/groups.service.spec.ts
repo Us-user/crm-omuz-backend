@@ -26,6 +26,8 @@ const row = (overrides: Partial<GroupRow> = {}): GroupRow => ({
   capacity: 16,
   status: GroupStatus.RECRUITING,
   telegramUrl: null,
+  // «Набрано» из «Required students = набрано/вместимость» (ТЗ 5.5).
+  _count: { students: 0 },
   createdAt: new Date('2026-07-27T10:00:00.000Z'),
   ...overrides,
 });
@@ -51,6 +53,7 @@ describe('GroupsService', () => {
       | 'findBranch'
       | 'findCourse'
       | 'countScheduleSlotsWithRoom'
+      | 'countStudents'
       | 'create'
       | 'update'
       | 'delete'
@@ -66,6 +69,7 @@ describe('GroupsService', () => {
       findBranch: jest.fn().mockResolvedValue({ id: BRANCH_ID, name: 'Sadbarg' }),
       findCourse: jest.fn().mockResolvedValue({ id: COURSE_ID, title: 'Frontend Basic' }),
       countScheduleSlotsWithRoom: jest.fn().mockResolvedValue(0),
+      countStudents: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -413,6 +417,41 @@ describe('GroupsService', () => {
 
       await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(NotFoundException);
       expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('409 на группу с составом — вместе с ней исчезла бы учебная история', async () => {
+      repository.countStudents.mockResolvedValue(7);
+
+      await expect(service.remove(GROUP_ID)).rejects.toMatchObject({
+        response: { message: expect.stringContaining('(7)') },
+      });
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('закрытые членства тоже держат группу: считаются все, а не только активные', async () => {
+      // Репозиторий считает без фильтра по статусу — сервису достаточно
+      // ненулевого числа, чтобы отказать.
+      repository.countStudents.mockResolvedValue(1);
+
+      await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(ConflictException);
+      expect(repository.countStudents).toHaveBeenCalledWith(GROUP_ID);
+    });
+  });
+
+  describe('Набрано/вместимость (ТЗ 5.5)', () => {
+    it('отдаёт «набрано» рядом с вместимостью', async () => {
+      repository.findById.mockResolvedValue(row({ capacity: 16, _count: { students: 12 } }));
+
+      await expect(service.findOne(GROUP_ID)).resolves.toMatchObject({
+        capacity: 16,
+        enrolledCount: 12,
+      });
+    });
+
+    it('пустая группа отдаёт ноль, а не пропускает поле', async () => {
+      const result = await service.findOne(GROUP_ID);
+
+      expect(result.enrolledCount).toBe(0);
     });
   });
 });

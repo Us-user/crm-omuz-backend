@@ -338,6 +338,8 @@ class InMemoryScheduleStore {
       capacity: null,
       status: group.status,
       telegramUrl: null,
+      // Состав здесь не проверяется: этому набору нужны только правила переноса.
+      _count: { students: 0 },
       createdAt: new Date('2026-07-28T09:00:00.000Z'),
     });
   }

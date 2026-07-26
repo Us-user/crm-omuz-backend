@@ -140,6 +140,12 @@ model Student {
   /// история остаётся здесь, а связь позволяет её найти со стороны сотрудника.
   promotedEmployee Employee? @relation("StudentPromotion")
 
+  /// Группы студента — действующие и закрытые (ТЗ 5.5, кабинет из ТЗ 5.3).
+  /// Одновременно активным может быть одно членство на курс (решение сессии 0012):
+  /// учиться на Frontend и English параллельно можно, в двух группах одного
+  /// курса — нет.
+  groups GroupStudent[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -546,6 +552,15 @@ model Group {
   /// Расписание группы (ТЗ 5.5: «слоты день+время → Timetable»).
   schedule ScheduleSlot[]
 
+  /// Состав группы (ТЗ 5.5). «Набрано» из «Required students» — это активные
+  /// членства, поэтому счётчик в карточке считается с фильтром по статусу.
+  students GroupStudent[]
+
+  /// Членства, переведённые **из** этой группы в другие (ТЗ 5.5: Transfer).
+  /// Обратная сторона `GroupStudent.transferredFromGroup`; отдельного экрана
+  /// у неё нет, но без неё Prisma не назовёт вторую связь на ту же модель.
+  transferredStudents GroupStudent[] @relation("GroupStudentTransfer")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -789,4 +804,74 @@ model ScheduleSlot {
   @@index([roomId, dayOfWeek])
   @@index([mentorId, dayOfWeek])
   @@map("schedule_slots")
+}
+
+// ───────────────────────── Состав группы (ТЗ 5.5, 5.12) ─────────────────────────
+
+/// Статус участия студента в группе (ТЗ 5.5: «массовые Change status
+/// (с обязательной причиной = Reason)»).
+///
+/// Это статус **членства**, а не самого студента (`Student.status`, ТЗ 5.3):
+/// студент может параллельно учиться на другом курсе, и уход из одной группы
+/// не означает, что он ушёл из центра. Решение сессии 0012.
+enum GroupStudentStatus {
+  /// Учится в группе. Считается в «набрано» из «Required students» (ТЗ 5.5).
+  ACTIVE
+  /// Покинул курс, не завершив его. Ровно эти записи и есть «Left courses»
+  /// из ТЗ 5.12: группа на момент ухода, причина и дата лежат здесь же.
+  LEFT
+  /// Прошёл обучение в группе до конца (ТЗ 5.3: статус студента Finished).
+  FINISHED
+  /// Переведён в другую группу (ТЗ 5.5: Transfer). Отдельный статус, а не `LEFT`:
+  /// переведённый не покинул центр, и в отчёт по покинувшим он попадать не должен.
+  TRANSFERRED
+}
+
+/// Студент в составе группы (ТЗ 5.5: «состав студентов»).
+///
+/// Эта же строка играет роль `Enrollment` из карты сущностей ТЗ 4: заводить
+/// вторую таблицу «история зачислений» значило бы держать два источника истины
+/// об одном и том же (решение сессии 0012). История сохраняется тем, что
+/// закрытые членства (`LEFT`/`FINISHED`/`TRANSFERRED`) не удаляются, а остаются
+/// со своей причиной и датой.
+///
+/// Каскады с обеих сторон — как у `GroupMentor`: членство это связь, а не
+/// самостоятельная запись. Удаление группы при этом упирается в проверку
+/// сервиса (409), чтобы учебная история не исчезала молча.
+model GroupStudent {
+  groupId   String @db.Uuid
+  studentId String @db.Uuid
+
+  group   Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  status GroupStudentStatus @default(ACTIVE)
+
+  /// Причина смены статуса (ТЗ 5.5: Reason обязателен; ТЗ 5.12: «причина —
+  /// свободный текст»). У только что зачисленного студента причины нет.
+  statusReason String?
+  /// Когда статус меняли в последний раз (ТЗ 5.12: «причина и дата»).
+  statusChangedAt DateTime?
+
+  /// Откуда студент переведён сюда (ТЗ 5.5: Transfer). `SET NULL`: удаление
+  /// прежней группы не должно уносить действующее членство в новой.
+  transferredFromGroupId String? @db.Uuid
+  transferredFromGroup   Group?  @relation("GroupStudentTransfer", fields: [transferredFromGroupId], references: [id], onDelete: SetNull)
+
+  enrolledAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Один студент в группе ровно один раз. Вернувшийся в ту же группу занимает
+  /// прежнюю строку, а не заводит вторую: «дважды в одной группе» не значит
+  /// ничего, а правило «одно активное членство на курс» держит сервис —
+  /// частичный уникальный индекс Prisma не выражает.
+  @@id([groupId, studentId])
+  /// Обратный обход: группы конкретного студента (кабинет студента, ТЗ 5.3).
+  @@index([studentId])
+  /// Под «набрано/вместимость» и выборку покинувших курс (ТЗ 5.5, 5.12).
+  @@index([groupId, status])
+  @@index([transferredFromGroupId])
+  @@map("group_students")
 }
