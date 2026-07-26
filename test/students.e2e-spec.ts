@@ -15,6 +15,8 @@ import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+import { RbacRepository } from 'src/rbac/rbac.repository';
+import { RbacModule } from 'src/rbac/rbac.module';
 import type {
   PromotedEmployee,
   PromoteStudentInput,
@@ -100,6 +102,38 @@ class InMemoryStudentsRepository {
   }
 }
 
+/**
+ * Права аккаунта в памяти вместо таблиц `permissions`/`positions`.
+ * Синхронизация каталога при старте здесь холостая — она проверяется юнит-тестами.
+ */
+class InMemoryRbacRepository {
+  private readonly granted = new Map<string, string[]>();
+
+  grant(accountId: string, ...codes: string[]): void {
+    this.granted.set(accountId, codes);
+  }
+
+  findAccountPermissionCodes(accountId: string): Promise<{ code: string }[]> {
+    return Promise.resolve((this.granted.get(accountId) ?? []).map((code) => ({ code })));
+  }
+
+  findAllPermissions(): Promise<[]> {
+    return Promise.resolve([]);
+  }
+
+  createPermissions(): Promise<number> {
+    return Promise.resolve(0);
+  }
+
+  updatePermission(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  syncSystemPosition(): Promise<number> {
+    return Promise.resolve(0);
+  }
+}
+
 const STUDENT_ID = '11111111-1111-1111-1111-111111111111';
 const ACCOUNT_ID = '22222222-2222-2222-2222-222222222222';
 const STUDENT_PHONE = '+992901234567';
@@ -131,12 +165,14 @@ describe('Студенты: перевод в сотрудники (e2e, хра�
   let app: INestApplication;
   let repository: InMemoryStudentsRepository;
   let employeeToken: string;
+  let strangerToken: string;
   let studentToken: string;
 
   const url = (id: string) => `/api/v1/students/${id}/promote-to-employee`;
 
   beforeEach(async () => {
     repository = new InMemoryStudentsRepository();
+    const rbac = new InMemoryRbacRepository();
 
     const moduleRef = await Test.createTestingModule({
       imports: [
@@ -145,6 +181,7 @@ describe('Студенты: перевод в сотрудники (e2e, хра�
         MailerModule,
         PhoneModule,
         AuthModule,
+        RbacModule,
         StudentsModule,
       ],
       providers: [
@@ -153,11 +190,13 @@ describe('Студенты: перевод в сотрудники (e2e, хра�
       ],
     })
       // AuthModule нужен целиком: он приносит глобальный `JwtAuthGuard`.
-      // Репозиторий подменяем, чтобы не тянуть Prisma.
+      // Репозитории подменяем, чтобы не тянуть Prisma.
       .overrideProvider(AuthRepository)
       .useValue({})
       .overrideProvider(StudentsRepository)
       .useValue(repository)
+      .overrideProvider(RbacRepository)
+      .useValue(rbac)
       .compile();
 
     const tokens = moduleRef.get(TokenService, { strict: false });
@@ -167,10 +206,16 @@ describe('Студенты: перевод в сотрудники (e2e, хра�
     await app.init();
 
     // Токены выпускаются напрямую: проверяется перевод, а не вход.
-    const issue = async (type: AccountType): Promise<string> =>
-      (await tokens.issuePair({ sub: randomUUID(), sid: randomUUID(), type })).accessToken;
+    const issue = async (type: AccountType, sub = randomUUID()): Promise<string> =>
+      (await tokens.issuePair({ sub, sid: randomUUID(), type })).accessToken;
 
-    employeeToken = await issue(AccountType.EMPLOYEE);
+    // Сотрудник с нужным правом, сотрудник вообще без прав и студент —
+    // три разных исхода на одном и том же эндпоинте.
+    const employeeAccountId = randomUUID();
+    rbac.grant(employeeAccountId, 'Permission.Students.Promote');
+
+    employeeToken = await issue(AccountType.EMPLOYEE, employeeAccountId);
+    strangerToken = await issue(AccountType.EMPLOYEE);
     studentToken = await issue(AccountType.STUDENT);
   });
 
@@ -201,6 +246,20 @@ describe('Студенты: перевод в сотрудники (e2e, хра�
         .expect(403);
 
       expect(response.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('сотрудник без права Permission.Students.Promote — 403 (ТЗ 3.2, 3.8)', async () => {
+      repository.addStudent(student());
+
+      const response = await request(app.getHttpServer())
+        .post(url(STUDENT_ID))
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .send({})
+        .expect(403);
+
+      expect(response.body.error.code).toBe('FORBIDDEN');
+      // Отказ до бизнес-логики: перевод не должен был начаться.
+      expect(repository.student(STUDENT_ID)?.accountId).toBe(ACCOUNT_ID);
     });
   });
 

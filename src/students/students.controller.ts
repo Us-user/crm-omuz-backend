@@ -13,6 +13,7 @@ import { AccountType } from '@prisma/client';
 
 import { AccountTypeGuard, RequireAccountType } from '../auth';
 import { ApiDataResponse, ApiStandardErrors } from '../common';
+import { RequirePermission } from '../rbac';
 import { PromoteStudentDto, PromoteStudentResponseDto } from './dto';
 import { StudentPromotionService } from './student-promotion.service';
 
@@ -28,11 +29,12 @@ export class StudentsController {
 
   @Post(':id/promote-to-employee')
   @HttpCode(HttpStatus.CREATED)
-  // До каталога прав (Фаза 2) действие закрыто грубо — по типу аккаунта:
-  // полномочия студента ограничены просмотром своих данных (ТЗ 3.2), поэтому
-  // повысить себя до сотрудника он не может.
+  // Два уровня, а не один: тип аккаунта берётся из токена и отсекает студента
+  // сразу (ТЗ 3.2 — ему доступен только просмотр своих данных), право проверяется
+  // по актуальным данным БД и отвечает за конкретное действие (ТЗ 3.8).
   @RequireAccountType(AccountType.EMPLOYEE)
   @UseGuards(AccountTypeGuard)
+  @RequirePermission('Permission.Students.Promote')
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Перевод студента в сотрудники',
@@ -41,7 +43,8 @@ export class StudentsController {
       'меняется только его тип. Профиль студента остаётся вместе с учебной историей, ' +
       'а сотрудник получает ссылку на него в `formerStudentId`. ' +
       'Все сессии аккаунта гасятся — войти нужно заново, чтобы получить токены нового типа. ' +
-      'Позиции (Position) назначаются отдельно, каталог прав появится в Фазе 2.',
+      'Требует права `Permission.Students.Promote`. Позиции переведённому сотруднику ' +
+      'назначаются отдельно — до этого прав у него нет.',
   })
   @ApiParam({ name: 'id', format: 'uuid', description: 'Идентификатор профиля студента' })
   @ApiDataResponse(PromoteStudentResponseDto, {

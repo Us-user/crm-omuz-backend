@@ -10,7 +10,13 @@
 // на профиль сотрудника (`Employee.formerStudentId` хранит связь с прошлым),
 // логин при этом не меняется, а строка `Student` со всей учебной историей живёт дальше.
 //
-// Доменные модули (Branch, Position, Group, …) добавляются в Фазах 2–3; поля-связи
+// Фаза 2 — роли, позиции и права (ТЗ 3.2, 5.15):
+//   Permission — каталог прав в нотации `Permission.<Раздел>.<Действие>`;
+//   Position   — позиция сотрудника, она же роль доступа;
+//   PositionPermission — «галочки» прав позиции;
+//   EmployeePosition   — позиции сотрудника (мультивыбор), права = union прав позиций.
+//
+// Доменные модули (Branch, Course, Group, …) добавляются в Фазе 3; поля-связи
 // к ним появятся в профилях тогда же.
 
 generator client {
@@ -127,7 +133,7 @@ model Student {
   @@map("students")
 }
 
-/// Профиль сотрудника (ТЗ 5.14). Позиции и права подключаются в Фазе 2.
+/// Профиль сотрудника (ТЗ 5.14).
 model Employee {
   id        String   @id @default(uuid()) @db.Uuid
   accountId String?  @unique @db.Uuid
@@ -158,6 +164,10 @@ model Employee {
   /// переводится ровно один раз.
   formerStudentId String?  @unique @db.Uuid
   formerStudent   Student? @relation("StudentPromotion", fields: [formerStudentId], references: [id], onDelete: SetNull)
+
+  /// Позиции сотрудника (ТЗ 5.14: Position — мультивыбор). Права сотрудника —
+  /// объединение прав всех этих позиций (ТЗ 3.2).
+  positions EmployeePosition[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -207,7 +217,7 @@ model PasswordResetCode {
   /// Сколько раз код вводили неверно. На пределе код гасится досрочно.
   attempts Int @default(0)
 
-  expiresAt DateTime
+  expiresAt  DateTime
   /// Проставляется при успешном сбросе или при досрочном гашении кода.
   consumedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -216,4 +226,94 @@ model PasswordResetCode {
   @@index([accountId, createdAt])
   @@index([expiresAt])
   @@map("password_reset_codes")
+}
+
+// ────────────────────────── Роли, позиции и права (RBAC) ─────────────────────────
+
+/// Право из каталога (ТЗ 3.2), нотация `Permission.<Раздел>.<Действие>`.
+///
+/// Набор кодов — источник истины в **коде** (`src/rbac/permission-catalog.ts`),
+/// а таблица хранит состояние переключателя и описание (ТЗ 5.15: «Permission — каталог
+/// прав (toggle)»). Иначе опечатка в `@RequirePermission(...)` молча означала бы
+/// право, которого нет ни у кого, — и эндпоинт стал бы недоступен вообще никому.
+/// Строки приводятся к каталогу при старте приложения (`PermissionCatalogSyncService`).
+model Permission {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Полный код целиком (`Permission.Students.Views`), чтобы строка в БД
+  /// и строка в декораторе совпадали побайтово.
+  code    String @unique
+  section String
+  action  String
+
+  description String?
+
+  /// Выключенное право не действует ни для одной позиции (toggle из ТЗ 5.15).
+  isEnabled Boolean @default(true)
+
+  /// Служебное право выключить нельзя: сняв управление каталогом прав,
+  /// систему нельзя было бы починить через API.
+  isSystem Boolean @default(false)
+
+  positions PositionPermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([section])
+  @@map("permissions")
+}
+
+/// Позиция сотрудника (ТЗ 5.14), она же роль доступа из Administration → Users (ТЗ 5.15).
+/// Термины «Role» и «Position» в ТЗ разведены, но сущность одна: права выдаются
+/// только позициями (ТЗ 3.2), а вторая таблица создала бы второй источник прав.
+model Position {
+  id String @id @default(uuid()) @db.Uuid
+
+  name        String  @unique
+  description String?
+
+  /// Системную позицию нельзя удалить или переименовать: на `Director`
+  /// опирается правило доступа к разделу Accounting (ТЗ 3.2).
+  isSystem Boolean @default(false)
+
+  permissions PositionPermission[]
+  employees   EmployeePosition[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("positions")
+}
+
+/// Права позиции — те самые «галочки» из каталога (ТЗ 3.2).
+model PositionPermission {
+  positionId   String @db.Uuid
+  permissionId String @db.Uuid
+
+  position   Position   @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([positionId, permissionId])
+  /// Обратный обход: кто выдаёт это право (нужен при выключении права в каталоге).
+  @@index([permissionId])
+  @@map("position_permissions")
+}
+
+/// Назначение позиции сотруднику (ТЗ 5.14 — мультивыбор, ТЗ 5.15 — drawer «Add roles»).
+model EmployeePosition {
+  employeeId String @db.Uuid
+  positionId String @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+
+  assignedAt DateTime @default(now())
+
+  @@id([employeeId, positionId])
+  /// Обратный обход: кто занимает позицию (список сотрудников позиции).
+  @@index([positionId])
+  @@map("employee_positions")
 }

@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 2 из 14 · 20 из 97 пунктов (~21%) — Фаза 0: 11/13 · **Фаза 1: 9/9 (закрыта)**
+**Общий прогресс:** Фаза 2 из 14 · 24 из 97 пунктов (~25%) — Фаза 0: 11/13 · **Фаза 1: 9/9 (закрыта)** · Фаза 2: 4/8
 
 ---
 
@@ -49,13 +49,13 @@
 ## Фаза 2 — Роли, позиции и права (RBAC) · ТЗ 3.2, 5.15
 Цель: гибкая система прав на каждом эндпоинте.
 
-- [ ] Модели: `Position`, `Permission`, `EmployeePosition`, `Role`
-- [ ] Каталог прав в нотации `Permission.<Раздел>.<Действие>`
-- [ ] Права сотрудника = union прав всех его позиций
-- [ ] Guard прав + декоратор `@RequirePermission(...)` на защищённых эндпоинтах — в Фазе 1 сделана грубая заготовка `@RequireAccountType(...)` + `AccountTypeGuard` (фильтр «сотрудник/студент»); она должна встать рядом, а не вместо
-- [ ] CRUD позиций (`/positions`) + назначение прав из каталога
-- [ ] Administration → Users: назначение ролей (`/admin/users`, `/admin/users/{id}/roles`)
-- [ ] Administration → Permission: каталог (`GET/PUT /admin/permissions`)
+- [x] Модели: `Position`, `Permission`, `PositionPermission`, `EmployeePosition` — отдельная `Role` **не заводится**: позиция и есть роль доступа (решение сессии 0005, закрывает «унификацию Role/Position» из ТЗ §6)
+- [x] Каталог прав в нотации `Permission.<Раздел>.<Действие>` — 99 кодов по всем разделам ТЗ 5; источник истины в коде (`src/rbac/permission-catalog.ts`), таблица приводится к нему при старте
+- [x] Права сотрудника = union прав всех его позиций (`PermissionsService`)
+- [x] Guard прав + декоратор `@RequirePermission(...)` — декоратор сам навешивает `PermissionsGuard`; `@RequireAccountType(...)` из Фазы 1 встал рядом (грубый фильтр по токену), а не вместо. Применён на `POST /students/{id}/promote-to-employee`
+- [ ] CRUD позиций (`/positions`) + назначение прав из каталога — системная позиция `Director` неизменяема
+- [ ] Administration → Users: назначение ролей (`/admin/users`, `/admin/users/{id}/roles`) — за словом «roles» стоят позиции
+- [ ] Administration → Permission: каталог (`GET/PUT /admin/permissions`) — переключатель `isEnabled`, служебные права выключать нельзя
 - [ ] Пример правила: раздел Accounting доступен только позиции Director
 
 ## Фаза 3 — Учебный контур: справочники и структура · ТЗ 5.5, 5.6, 5.10, 5.17
@@ -181,4 +181,4 @@
 - ⏸ Трата коинов / магазин (механика начисления готова)
 - ⏸ Применение купона к оплате
 - Уточнить состав полей шаблонов документов
-- Унификация терминов Role/Position
+- ✅ Унификация терминов Role/Position — решено в Фазе 2: одна сущность `Position`, «роль» на экранах Administration = позиция
