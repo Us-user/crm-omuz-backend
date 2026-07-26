@@ -33,6 +33,9 @@ export class BranchDto {
   @ApiProperty({ example: 4, description: 'Сколько аудиторий в филиале' })
   roomsCount!: number;
 
+  @ApiProperty({ example: 7, description: 'Сколько групп учится в филиале (ТЗ 5.17: «группы»)' })
+  groupsCount!: number;
+
   @ApiProperty({ example: 120, description: 'Сколько студентов закреплено за филиалом' })
   studentsCount!: number;
 

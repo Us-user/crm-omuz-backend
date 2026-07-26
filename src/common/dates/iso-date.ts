@@ -25,3 +25,12 @@ export function parseIsoDate(value: string, field: string, message = 'Некор
 
   return date;
 }
+
+/**
+ * Обратная операция: календарная дата → `YYYY-MM-DD`.
+ *
+ * Колонки `@db.Date` приезжают из Prisma как полночь UTC. Отдавать их полным
+ * ISO-временем значило бы обещать клиенту точность, которой в столбце нет,
+ * и втягивать его в разбор часовых поясов там, где времени вообще не было.
+ */
+export const formatIsoDate = (date: Date): string => date.toISOString().slice(0, 10);

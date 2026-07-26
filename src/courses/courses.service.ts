@@ -93,12 +93,18 @@ export class CoursesService {
   }
 
   /**
-   * Удаление курса. Проверки «курс занят группами» пока нет: модели `Group`
-   * ещё не существует, и выдуманное ограничение было бы хуже отсутствующего.
-   * Она встанет сюда вместе с группами — как в филиалах.
+   * Удаление курса. Курс, по которому набраны группы, не удаляется: внешний
+   * ключ стоит `RESTRICT` и БД такое удаление и так не пропустит, но проверка
+   * здесь нужна, чтобы наружу ушла причина, а не обезличенная ошибка связи.
    */
   async remove(id: string): Promise<CourseDeletedDto> {
     const course = await this.require(id);
+
+    if (course._count.groups > 0) {
+      throw new ConflictException(
+        `По курсу учатся группы (${String(course._count.groups)}) — удалите или переведите их перед удалением курса`,
+      );
+    }
 
     await this.repository.delete(id);
     this.logger.log(`Удалён курс ${course.title} (${id})`);
@@ -139,5 +145,6 @@ const toDto = (row: CourseRow): CourseDto => ({
   durationValue: row.durationValue,
   durationUnit: row.durationUnit,
   status: row.status,
+  groupsCount: row._count.groups,
   createdAt: row.createdAt.toISOString(),
 });

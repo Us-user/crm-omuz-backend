@@ -19,10 +19,11 @@
 // Фаза 3 — учебный контур, справочники (ТЗ 5.6, 5.10, 5.17):
 //   Branch — филиал; к нему привязаны аудитории, студенты и сотрудники (ТЗ 3.3);
 //   Room   — аудитория филиала, источник поля «аудитория» в расписании;
-//   Course — курс каталога: стоимость, длительность, флаг последнего курса.
+//   Course — курс каталога: стоимость, длительность, флаг последнего курса;
+//   Group  — учебная группа (ТЗ 5.5): курс + филиал + сроки + вместимость.
 //
-// Группы, силлабус и расписание (Group, SyllabusLesson, ScheduleSlot, …)
-// добавляются следующим куском Фазы 3.
+// Силлабус и расписание (SyllabusLesson, ResourceFile, GroupMentor, ScheduleSlot,
+// GroupStudent, Enrollment) добавляются следующими кусками Фазы 3.
 
 generator client {
   provider = "prisma-client-js"
@@ -378,6 +379,7 @@ model Branch {
   rooms     Room[]
   students  Student[]
   employees Employee[]
+  groups    Group[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -443,6 +445,9 @@ model Course {
 
   status DirectoryStatus @default(ACTIVE)
 
+  /// Группы, которые учатся по этому курсу (ТЗ 5.6: «кол-во групп» на карточке).
+  groups Group[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -450,4 +455,79 @@ model Course {
   /// Автовыпуск ищет курсы с флагом последнего — выборка по одному значению.
   @@index([isLastCourse])
   @@map("courses")
+}
+
+/// Формат занятий (ТЗ 5.5: Online/Offline).
+enum GroupFormat {
+  ONLINE
+  OFFLINE
+}
+
+/// Жизненный цикл группы. ТЗ 5.5 требует поле «статус» и фильтр по нему,
+/// но самого перечисления не даёт (в отличие от статусов студента из ТЗ 5.3),
+/// поэтому набор выбран решением пользователя (сессия 0008).
+enum GroupStatus {
+  /// Идёт набор: студентов добирают до вместимости («Required students», ТЗ 5.5).
+  RECRUITING
+  /// Занятия идут.
+  ACTIVE
+  /// Срок вышел. Для группы курса с «Is last course» это точка автовыпуска (ТЗ 5.11).
+  FINISHED
+  /// Группа не состоялась. Отличается от `FINISHED`: обучения не было.
+  CANCELLED
+}
+
+/// Учебная группа (ТЗ 5.5) — то, к чему сходится весь учебный контур:
+/// журнал (ТЗ 5.8), расписание (ТЗ 5.10) и состав студентов ссылаются на неё.
+///
+/// Курс и филиал обязательны: группа без курса не имеет программы, а без филиала
+/// не попадает ни в фильтр «Branch», ни в разрез мультифилиальности (ТЗ 3.3).
+/// Обе связи — `RESTRICT`: удаление курса или филиала, за которым числятся
+/// группы, отклоняется с объяснением (см. `CoursesService`, `BranchesService`).
+model Group {
+  id String @id @default(uuid()) @db.Uuid
+
+  name        String
+  description String?
+
+  courseId String @db.Uuid
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Restrict)
+
+  branchId String @db.Uuid
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  format GroupFormat @default(OFFLINE)
+
+  /// Сроки обучения. `endDate` можно не передавать: он считается из `startDate`
+  /// и длительности — именно ради этого длительность хранится парой «число + единица».
+  startDate DateTime? @db.Date
+  endDate   DateTime? @db.Date
+
+  /// Длительность группы (ТЗ 5.5: «число + тип»). Может отличаться от длительности
+  /// курса: одну и ту же программу растягивают или сжимают под расписание набора.
+  durationValue Int?
+  durationUnit  DurationUnit @default(MONTH)
+
+  /// «Required students» из ТЗ 5.5 — сколько человек набирают в группу.
+  /// Само «набрано/вместимость» посчитается, когда появится состав группы.
+  capacity Int?
+
+  status GroupStatus @default(RECRUITING)
+
+  /// Ссылка на групповой чат (ТЗ 5.5: «Telegram-ссылка»).
+  telegramUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Название уникально внутри филиала, как у аудиторий: «Frontend-1» набирают
+  /// в каждом филиале, а глобальная уникальность заставила бы придумывать
+  /// «Sadbarg-Frontend-1». Отдельного `@@index([branchId])` нет намеренно —
+  /// фильтр по филиалу обслуживается крайним левым столбцом этого же индекса.
+  @@unique([branchId, name])
+  @@index([courseId])
+  @@index([status])
+  /// Под фильтры и отчёты по датам (ТЗ 7).
+  @@index([startDate])
+  @@map("groups")
 }

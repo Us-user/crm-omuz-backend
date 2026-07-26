@@ -125,6 +125,7 @@ export class BranchesService {
   private assertEmpty(branch: BranchRow): void {
     const attached = [
       { count: branch._count.rooms, label: 'аудитории' },
+      { count: branch._count.groups, label: 'группы' },
       { count: branch._count.students, label: 'студенты' },
       { count: branch._count.employees, label: 'сотрудники' },
     ].filter((item) => item.count > 0);
@@ -148,6 +149,7 @@ const toDto = (row: BranchRow): BranchDto => ({
   description: row.description,
   status: row.status,
   roomsCount: row._count.rooms,
+  groupsCount: row._count.groups,
   studentsCount: row._count.students,
   employeesCount: row._count.employees,
   createdAt: row.createdAt.toISOString(),

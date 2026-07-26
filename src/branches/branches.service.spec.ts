@@ -20,7 +20,7 @@ const row = (overrides: Partial<BranchRow> = {}): BranchRow => ({
   description: null,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-07-27T10:00:00.000Z'),
-  _count: { rooms: 0, students: 0, employees: 0 },
+  _count: { rooms: 0, groups: 0, students: 0, employees: 0 },
   ...overrides,
 });
 
@@ -55,7 +55,7 @@ describe('BranchesService', () => {
   describe('Список и карточка', () => {
     it('отдаёт постраничный список со счётчиками привязанных записей', async () => {
       repository.findMany.mockResolvedValue({
-        rows: [row({ _count: { rooms: 4, students: 120, employees: 9 } })],
+        rows: [row({ _count: { rooms: 4, groups: 7, students: 120, employees: 9 } })],
         total: 1,
       });
 
@@ -65,6 +65,7 @@ describe('BranchesService', () => {
       expect(result.items[0]).toMatchObject({
         name: 'Sadbarg',
         roomsCount: 4,
+        groupsCount: 7,
         studentsCount: 120,
         employeesCount: 9,
         createdAt: '2026-07-27T10:00:00.000Z',
@@ -205,7 +206,7 @@ describe('BranchesService', () => {
 
     it('409, если к филиалу привязаны студенты — с перечислением причин', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 2, students: 15, employees: 0 } }),
+        row({ _count: { rooms: 2, groups: 0, students: 15, employees: 0 } }),
       );
 
       const error = await service.remove(BRANCH_ID).catch((e: unknown) => e);
@@ -213,17 +214,30 @@ describe('BranchesService', () => {
       expect(error).toBeInstanceOf(ConflictException);
       expect((error as ConflictException).message).toContain('аудитории (2)');
       expect((error as ConflictException).message).toContain('студенты (15)');
-      // Сотрудников нет — про них в сообщении быть не должно.
+      // Сотрудников и групп нет — про них в сообщении быть не должно.
       expect((error as ConflictException).message).not.toContain('сотрудники');
+      expect((error as ConflictException).message).not.toContain('группы');
       expect(repository.delete).not.toHaveBeenCalled();
     });
 
     it('409, если к филиалу привязаны только сотрудники', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 0, students: 0, employees: 3 } }),
+        row({ _count: { rooms: 0, groups: 0, students: 0, employees: 3 } }),
       );
 
       await expect(service.remove(BRANCH_ID)).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('409, если в филиале набраны группы (ТЗ 5.5 — связь RESTRICT)', async () => {
+      repository.findById.mockResolvedValue(
+        row({ _count: { rooms: 0, groups: 4, students: 0, employees: 0 } }),
+      );
+
+      const error = await service.remove(BRANCH_ID).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toContain('группы (4)');
+      expect(repository.delete).not.toHaveBeenCalled();
     });
 
     it('404 на удаление неизвестного филиала', async () => {

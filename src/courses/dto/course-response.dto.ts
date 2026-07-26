@@ -44,6 +44,9 @@ export class CourseDto {
   @ApiProperty({ enum: DirectoryStatus })
   status!: DirectoryStatus;
 
+  @ApiProperty({ example: 3, description: '«Кол-во групп» с карточки курса (ТЗ 5.6)' })
+  groupsCount!: number;
+
   @ApiProperty({ example: '2026-07-27T10:15:00.000Z' })
   createdAt!: string;
 }

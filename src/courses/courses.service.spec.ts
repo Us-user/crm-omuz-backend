@@ -22,6 +22,7 @@ const row = (overrides: Partial<CourseRow> = {}): CourseRow => ({
   durationUnit: DurationUnit.MONTH,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-07-27T10:00:00.000Z'),
+  _count: { groups: 0 },
   ...overrides,
 });
 
@@ -220,11 +221,33 @@ describe('CoursesService', () => {
       expect(repository.delete).toHaveBeenCalledWith(COURSE_ID);
     });
 
+    it('409 на удаление курса, по которому учатся группы (ТЗ 5.5)', async () => {
+      repository.findById.mockResolvedValue(row({ _count: { groups: 3 } }));
+
+      const error = await service.remove(COURSE_ID).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toContain('(3)');
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
     it('404 на удаление неизвестного курса', async () => {
       repository.findById.mockResolvedValue(null);
 
       await expect(service.remove(COURSE_ID)).rejects.toBeInstanceOf(NotFoundException);
       expect(repository.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Счётчик групп (ТЗ 5.6)', () => {
+    it('отдаёт «кол-во групп» в карточке курса', async () => {
+      repository.findById.mockResolvedValue(row({ _count: { groups: 5 } }));
+
+      await expect(service.findOne(COURSE_ID)).resolves.toMatchObject({ groupsCount: 5 });
+    });
+
+    it('курс без групп отдаёт ноль, а не пропущенное поле', async () => {
+      await expect(service.findOne(COURSE_ID)).resolves.toMatchObject({ groupsCount: 0 });
     });
   });
 });

@@ -19,6 +19,10 @@ const COURSE_SELECT = {
   durationUnit: true,
   status: true,
   createdAt: true,
+  // «Кол-во групп» с карточки курса (ТЗ 5.6). Счётчик, а не сами группы:
+  // на экране каталога нужно только число, а групп у курса за годы много.
+  // На нём же держится запрет удалять курс, по которому кто-то учится.
+  _count: { select: { groups: true } },
 } satisfies Prisma.CourseSelect;
 
 export type CourseRow = Prisma.CourseGetPayload<{ select: typeof COURSE_SELECT }>;

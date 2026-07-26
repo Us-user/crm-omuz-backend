@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { AccountType, DirectoryStatus, DurationUnit } from '@prisma/client';
+import {
+  AccountType,
+  DirectoryStatus,
+  DurationUnit,
+  GroupFormat,
+  GroupStatus,
+} from '@prisma/client';
 import request from 'supertest';
 
 import { AuthModule } from 'src/auth/auth.module';
@@ -22,6 +28,9 @@ import { AppConfigModule } from 'src/config/config.module';
 import { CoursesModule } from 'src/courses/courses.module';
 import { CoursesRepository } from 'src/courses/courses.repository';
 import type { CourseListParams, CourseRow, CourseWriteInput } from 'src/courses/courses.repository';
+import { GroupsModule } from 'src/groups/groups.module';
+import { GroupsRepository } from 'src/groups/groups.repository';
+import type { GroupListParams, GroupRow, GroupWriteInput } from 'src/groups/groups.repository';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
@@ -69,15 +78,16 @@ class InMemoryRbacRepository {
 }
 
 /**
- * Справочники учебного контура в памяти. Все три живут в одном хранилище,
- * потому что связаны: аудитория ссылается на филиал, а счётчики филиала
- * считают аудитории и людей. Три несогласованные заглушки проверяли бы
- * не то поведение, которое даёт настоящая БД.
+ * Справочники учебного контура в памяти. Все четыре сущности живут в одном
+ * хранилище, потому что связаны: аудитория и группа ссылаются на филиал,
+ * группа — ещё и на курс, а счётчики филиала и курса считают эти ссылки.
+ * Несогласованные заглушки проверяли бы не то поведение, которое даёт БД.
  */
 class InMemoryCatalogStore {
   readonly branches = new Map<string, BranchRow>();
   readonly rooms = new Map<string, RoomRow>();
   readonly courses = new Map<string, CourseRow>();
+  readonly groups = new Map<string, GroupRow>();
 
   /** Люди, закреплённые за филиалом: нужны только как счётчики в карточке. */
   private readonly people = new Map<string, { students: number; employees: number }>();
@@ -93,7 +103,7 @@ class InMemoryCatalogStore {
       description: null,
       status: DirectoryStatus.ACTIVE,
       createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      _count: { rooms: 0, students: 0, employees: 0 },
+      _count: { rooms: 0, groups: 0, students: 0, employees: 0 },
       ...overrides,
     };
     this.branches.set(branch.id, branch);
@@ -140,11 +150,42 @@ class InMemoryCatalogStore {
       durationUnit: DurationUnit.MONTH,
       status: DirectoryStatus.ACTIVE,
       createdAt: new Date('2026-07-22T00:00:00.000Z'),
+      _count: { groups: 0 },
       ...overrides,
     };
     this.courses.set(course.id, course);
 
     return course;
+  }
+
+  addGroup(
+    branchId: string,
+    courseId: string,
+    name: string,
+    overrides: Partial<GroupRow> = {},
+  ): GroupRow {
+    const branch = this.branchOrThrow(branchId);
+    const course = this.courseOrThrow(courseId);
+    const group: GroupRow = {
+      id: randomUUID(),
+      name,
+      description: null,
+      course: { id: course.id, title: course.title, isLastCourse: course.isLastCourse },
+      branch: { id: branch.id, name: branch.name },
+      format: GroupFormat.OFFLINE,
+      startDate: null,
+      endDate: null,
+      durationValue: null,
+      durationUnit: DurationUnit.MONTH,
+      capacity: null,
+      status: GroupStatus.RECRUITING,
+      telegramUrl: null,
+      createdAt: new Date('2026-07-23T00:00:00.000Z'),
+      ...overrides,
+    };
+    this.groups.set(group.id, group);
+
+    return group;
   }
 
   // ─── BranchesRepository ───
@@ -305,7 +346,8 @@ class InMemoryCatalogStore {
           [course.title, course.subtitle ?? '', course.description ?? ''].some((field) =>
             field.toLowerCase().includes(search),
           ),
-      );
+      )
+      .map((course) => this.withGroupCount(course));
 
     matched.sort((a, b) => a.title.localeCompare(b.title));
 
@@ -316,7 +358,9 @@ class InMemoryCatalogStore {
   }
 
   findCourseById(id: string): Promise<CourseRow | null> {
-    return Promise.resolve(this.courses.get(id) ?? null);
+    const course = this.courses.get(id);
+
+    return Promise.resolve(course ? this.withGroupCount(course) : null);
   }
 
   findCourseByTitle(title: string): Promise<{ id: string; title: string } | null> {
@@ -356,6 +400,89 @@ class InMemoryCatalogStore {
     return Promise.resolve();
   }
 
+  // ─── GroupsRepository ───
+
+  findGroups(params: GroupListParams): Promise<{ rows: GroupRow[]; total: number }> {
+    const search = params.search?.toLowerCase();
+    const matched = [...this.groups.values()]
+      .filter((group) => params.branchId === undefined || group.branch.id === params.branchId)
+      .filter((group) => params.courseId === undefined || group.course.id === params.courseId)
+      .filter((group) => params.status === undefined || group.status === params.status)
+      .filter((group) => params.format === undefined || group.format === params.format)
+      .filter(
+        (group) =>
+          search === undefined ||
+          [group.name, group.description ?? '', group.course.title, group.branch.name].some(
+            (field) => field.toLowerCase().includes(search),
+          ),
+      );
+
+    matched.sort((a, b) => a.name.localeCompare(b.name));
+
+    return Promise.resolve({
+      rows: matched.slice(params.skip, params.skip + params.take),
+      total: matched.length,
+    });
+  }
+
+  findGroupById(id: string): Promise<GroupRow | null> {
+    return Promise.resolve(this.groups.get(id) ?? null);
+  }
+
+  findGroupByName(branchId: string, name: string): Promise<{ id: string; name: string } | null> {
+    const found = [...this.groups.values()].find(
+      (group) => group.branch.id === branchId && group.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    return Promise.resolve(found ? { id: found.id, name: found.name } : null);
+  }
+
+  findCourseShort(id: string): Promise<{ id: string; title: string } | null> {
+    const course = this.courses.get(id);
+
+    return Promise.resolve(course ? { id: course.id, title: course.title } : null);
+  }
+
+  createGroup(input: GroupWriteInput): Promise<GroupRow> {
+    const { branchId, courseId, ...rest } = input;
+
+    return Promise.resolve(
+      this.addGroup(branchId, courseId, input.name, {
+        ...rest,
+        format: input.format ?? GroupFormat.OFFLINE,
+        durationUnit: input.durationUnit ?? DurationUnit.MONTH,
+        status: input.status ?? GroupStatus.RECRUITING,
+      }),
+    );
+  }
+
+  updateGroup(id: string, input: Partial<GroupWriteInput>): Promise<GroupRow> {
+    const group = this.groups.get(id);
+    if (!group) throw new Error('Группы нет: тест построен неверно');
+
+    const { branchId, courseId, ...rest } = input;
+    if (branchId !== undefined) {
+      const branch = this.branchOrThrow(branchId);
+      group.branch = { id: branch.id, name: branch.name };
+    }
+    if (courseId !== undefined) {
+      const course = this.courseOrThrow(courseId);
+      group.course = { id: course.id, title: course.title, isLastCourse: course.isLastCourse };
+    }
+    for (const [key, value] of Object.entries(rest)) {
+      // `undefined` означает «поле не передано» — так же его пропускает Prisma.
+      if (value !== undefined) Object.assign(group, { [key]: value });
+    }
+
+    return Promise.resolve(group);
+  }
+
+  deleteGroup(id: string): Promise<void> {
+    this.groups.delete(id);
+
+    return Promise.resolve();
+  }
+
   // ─── Вспомогательное ───
 
   private branchOrThrow(id: string): BranchRow {
@@ -365,16 +492,33 @@ class InMemoryCatalogStore {
     return branch;
   }
 
+  private courseOrThrow(id: string): CourseRow {
+    const course = this.courses.get(id);
+    if (!course) throw new Error('Курса нет: тест построен неверно');
+
+    return course;
+  }
+
   /** Счётчики считаются на лету — как `_count` в настоящем запросе. */
   private withCounts(branch: BranchRow): BranchRow {
     const people = this.people.get(branch.id) ?? { students: 0, employees: 0 };
     branch._count = {
       rooms: [...this.rooms.values()].filter((room) => room.branch.id === branch.id).length,
+      groups: [...this.groups.values()].filter((group) => group.branch.id === branch.id).length,
       students: people.students,
       employees: people.employees,
     };
 
     return branch;
+  }
+
+  /** «Кол-во групп» курса (ТЗ 5.6) — тот же `_count`, только по другой связи. */
+  private withGroupCount(course: CourseRow): CourseRow {
+    course._count = {
+      groups: [...this.groups.values()].filter((group) => group.course.id === course.id).length,
+    };
+
+    return course;
   }
 }
 
@@ -386,6 +530,7 @@ interface BranchBody {
   phone: string | null;
   status: DirectoryStatus;
   roomsCount: number;
+  groupsCount: number;
   studentsCount: number;
   employeesCount: number;
 }
@@ -404,6 +549,22 @@ interface CourseBody {
   isLastCourse: boolean;
   durationValue: number;
   durationUnit: DurationUnit;
+  groupsCount: number;
+}
+
+interface GroupBody {
+  id: string;
+  name: string;
+  description: string | null;
+  course: { id: string; title: string; isLastCourse: boolean };
+  branch: { id: string; name: string };
+  format: GroupFormat;
+  startDate: string | null;
+  endDate: string | null;
+  durationValue: number | null;
+  capacity: number | null;
+  status: GroupStatus;
+  telegramUrl: string | null;
 }
 
 describe('Справочники учебного контура (e2e, хранилище в памяти)', () => {
@@ -447,6 +608,7 @@ describe('Справочники учебного контура (e2e, хран�
         BranchesModule,
         RoomsModule,
         CoursesModule,
+        GroupsModule,
       ],
       providers: [
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -487,6 +649,17 @@ describe('Справочники учебного контура (e2e, хран�
         update: (id: string, input: Partial<CourseWriteInput>) => store.updateCourse(id, input),
         delete: (id: string) => store.deleteCourse(id),
       })
+      .overrideProvider(GroupsRepository)
+      .useValue({
+        findMany: (params: GroupListParams) => store.findGroups(params),
+        findById: (id: string) => store.findGroupById(id),
+        findByName: (branchId: string, name: string) => store.findGroupByName(branchId, name),
+        findBranch: (id: string) => store.findBranchShort(id),
+        findCourse: (id: string) => store.findCourseShort(id),
+        create: (input: GroupWriteInput) => store.createGroup(input),
+        update: (id: string, input: Partial<GroupWriteInput>) => store.updateGroup(id, input),
+        delete: (id: string) => store.deleteGroup(id),
+      })
       .compile();
 
     tokens = moduleRef.get(TokenService, { strict: false });
@@ -517,6 +690,7 @@ describe('Справочники учебного контура (e2e, хран�
       await request(server).get('/api/v1/branches').expect(401);
       await request(server).get('/api/v1/rooms').expect(401);
       await request(server).get('/api/v1/courses').expect(401);
+      await request(server).get('/api/v1/groups').expect(401);
     });
 
     it('студент не ведёт справочники — 403 (ТЗ 3.2)', async () => {
@@ -525,6 +699,7 @@ describe('Справочники учебного контура (e2e, хран�
       await get('/api/v1/branches', token).expect(403);
       await get('/api/v1/rooms', token).expect(403);
       await get('/api/v1/courses', token).expect(403);
+      await get('/api/v1/groups', token).expect(403);
     });
 
     it('сотрудник без прав — 403', async () => {
@@ -544,11 +719,12 @@ describe('Справочники учебного контура (e2e, хран�
       }).expect(403);
     });
 
-    it('право на филиалы не открывает курсы и аудитории', async () => {
+    it('право на филиалы не открывает курсы, аудитории и группы', async () => {
       const token = await actor('Permission.Branches.Views');
 
       await get('/api/v1/rooms', token).expect(403);
       await get('/api/v1/courses', token).expect(403);
+      await get('/api/v1/groups', token).expect(403);
     });
   });
 
@@ -662,6 +838,30 @@ describe('Справочники учебного контура (e2e, хран�
 
       expect(store.branches.has(withRooms.id)).toBe(true);
       expect(store.branches.has(withPeople.id)).toBe(true);
+    });
+
+    it('409 на удаление филиала, в котором набраны группы', async () => {
+      const token = await actor('Permission.Branches.Delete');
+      const branch = store.addBranch({ name: 'Sadbarg' });
+      const course = store.addCourse('Frontend Basic');
+      store.addGroup(branch.id, course.id, 'Frontend-1');
+
+      const response = await send('delete', `/api/v1/branches/${branch.id}`, token).expect(409);
+
+      expect(response.body.error.message).toContain('группы (1)');
+      expect(store.branches.has(branch.id)).toBe(true);
+    });
+
+    it('счётчик групп виден в карточке филиала', async () => {
+      const token = await actor('Permission.Branches.Views');
+      const branch = store.addBranch({ name: 'Sadbarg' });
+      const course = store.addCourse('Frontend Basic');
+      store.addGroup(branch.id, course.id, 'Frontend-1');
+      store.addGroup(branch.id, course.id, 'Frontend-2');
+
+      const response = await get(`/api/v1/branches/${branch.id}`, token).expect(200);
+
+      expect(dataOf<BranchBody>(response).groupsCount).toBe(2);
     });
 
     it('удаляет пустой филиал', async () => {
@@ -885,6 +1085,23 @@ describe('Справочники учебного контура (e2e, хран�
       expect(dataOf<CourseBody>(response)).toMatchObject({ fee: 1400, isLastCourse: false });
     });
 
+    it('отдаёт «кол-во групп» курса (ТЗ 5.6)', async () => {
+      const token = await actor('Permission.Courses.Views');
+      const branch = store.addBranch({ name: 'Sadbarg' });
+      const course = store.addCourse('Frontend Basic');
+      store.addGroup(branch.id, course.id, 'Frontend-1');
+      store.addGroup(branch.id, course.id, 'Frontend-2');
+      store.addCourse('Backend Basic');
+
+      const response = await get('/api/v1/courses', token).expect(200);
+
+      const byTitle = new Map(
+        dataOf<CourseBody[]>(response).map((item) => [item.title, item.groupsCount]),
+      );
+      expect(byTitle.get('Frontend Basic')).toBe(2);
+      expect(byTitle.get('Backend Basic')).toBe(0);
+    });
+
     it('удаляет курс; 404 на неизвестный', async () => {
       const token = await actor('Permission.Courses.Delete');
       const course = store.addCourse('Temp');
@@ -893,6 +1110,275 @@ describe('Справочники учебного контура (e2e, хран�
       expect(response.body.data).toEqual({ id: course.id, title: 'Temp' });
 
       await send('delete', `/api/v1/courses/${randomUUID()}`, token).expect(404);
+    });
+
+    it('409 на удаление курса, по которому учатся группы', async () => {
+      const token = await actor('Permission.Courses.Delete');
+      const branch = store.addBranch({ name: 'Sadbarg' });
+      const course = store.addCourse('Frontend Basic');
+      store.addGroup(branch.id, course.id, 'Frontend-1');
+
+      const response = await send('delete', `/api/v1/courses/${course.id}`, token).expect(409);
+
+      expect(response.body.error.code).toBe('CONFLICT');
+      expect(store.courses.has(course.id)).toBe(true);
+    });
+  });
+
+  describe('Группы (ТЗ 5.5)', () => {
+    /** Филиал и курс, на которые ссылается группа: без них её не создать. */
+    const scene = (): { branchId: string; courseId: string } => {
+      const branch = store.addBranch({ name: 'Sadbarg' });
+      const course = store.addCourse('Frontend Basic');
+
+      return { branchId: branch.id, courseId: course.id };
+    };
+
+    it('создаёт группу с курсом, филиалом, сроками и вместимостью', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+
+      const response = await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId,
+        format: GroupFormat.ONLINE,
+        startDate: '2026-09-01',
+        endDate: '2026-09-30',
+        durationValue: 1,
+        durationUnit: DurationUnit.MONTH,
+        capacity: 16,
+        telegramUrl: 'https://t.me/omuz_frontend_1',
+      }).expect(201);
+
+      expect(dataOf<GroupBody>(response)).toMatchObject({
+        name: 'Frontend-1',
+        course: { id: courseId, title: 'Frontend Basic', isLastCourse: false },
+        branch: { id: branchId, name: 'Sadbarg' },
+        format: GroupFormat.ONLINE,
+        startDate: '2026-09-01',
+        endDate: '2026-09-30',
+        capacity: 16,
+        status: GroupStatus.RECRUITING,
+      });
+    });
+
+    it('даты отдаются как YYYY-MM-DD, без времени', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+
+      const response = await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId,
+        startDate: '2026-09-01',
+      }).expect(201);
+
+      expect(dataOf<GroupBody>(response).startDate).toBe('2026-09-01');
+    });
+
+    it('422 на несуществующий курс и на несуществующий филиал в теле', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+
+      const noCourse = await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId: randomUUID(),
+        branchId,
+      }).expect(422);
+      expect(noCourse.body.error.code).toBe('UNPROCESSABLE_ENTITY');
+
+      await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId: randomUUID(),
+      }).expect(422);
+    });
+
+    it('409 на тёзку в том же филиале, но не в соседнем', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+      const other = store.addBranch({ name: 'Profsous' });
+      store.addGroup(branchId, courseId, 'Frontend-1');
+
+      // Регистр не спасает: «frontend-1» человек читает как ту же группу.
+      await send('post', '/api/v1/groups', token, {
+        name: 'frontend-1',
+        courseId,
+        branchId,
+      }).expect(409);
+
+      await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId: other.id,
+      }).expect(201);
+    });
+
+    it('400 на дату окончания раньше даты начала', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+
+      const response = await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId,
+        startDate: '2026-09-30',
+        endDate: '2026-09-01',
+      }).expect(400);
+
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('400 на несуществующую дату, неверный формат и лишнее поле', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+      const base = { name: 'Frontend-1', courseId, branchId };
+
+      await send('post', '/api/v1/groups', token, { ...base, startDate: '2026-02-30' }).expect(400);
+      await send('post', '/api/v1/groups', token, { ...base, startDate: '01.09.2026' }).expect(400);
+      await send('post', '/api/v1/groups', token, { ...base, unexpected: true }).expect(400);
+    });
+
+    it('400 на единицу длительности без значения и на вместимость вне границ', async () => {
+      const token = await actor('Permission.Groups.Create');
+      const { branchId, courseId } = scene();
+      const base = { name: 'Frontend-1', courseId, branchId };
+
+      await send('post', '/api/v1/groups', token, {
+        ...base,
+        durationUnit: DurationUnit.WEEK,
+      }).expect(400);
+
+      await send('post', '/api/v1/groups', token, { ...base, capacity: 0 }).expect(400);
+      await send('post', '/api/v1/groups', token, { ...base, capacity: 1000 }).expect(400);
+    });
+
+    it('фильтры Branch / Course / Status отбирают группы (ТЗ 5.5)', async () => {
+      const token = await actor('Permission.Groups.Views');
+      const { branchId, courseId } = scene();
+      const other = store.addBranch({ name: 'Profsous' });
+      const advanced = store.addCourse('Frontend Advanced', { isLastCourse: true });
+
+      store.addGroup(branchId, courseId, 'Frontend-1');
+      store.addGroup(branchId, advanced.id, 'Advanced-1', { status: GroupStatus.ACTIVE });
+      store.addGroup(other.id, courseId, 'Frontend-2');
+
+      const byBranch = await get(`/api/v1/groups?branchId=${branchId}`, token).expect(200);
+      expect(byBranch.body.meta.total).toBe(2);
+
+      const byCourse = await get(`/api/v1/groups?courseId=${advanced.id}`, token).expect(200);
+      expect(dataOf<GroupBody[]>(byCourse).map((group) => group.name)).toEqual(['Advanced-1']);
+
+      const byStatus = await get(`/api/v1/groups?status=${GroupStatus.ACTIVE}`, token).expect(200);
+      expect(byStatus.body.meta.total).toBe(1);
+    });
+
+    it('список отдаёт { data, meta } и флаг «Is last course» курса (ТЗ 5.11)', async () => {
+      const token = await actor('Permission.Groups.Views');
+      const { branchId } = scene();
+      const last = store.addCourse('Frontend Advanced', { isLastCourse: true });
+      store.addGroup(branchId, last.id, 'Advanced-1');
+
+      const response = await get('/api/v1/groups', token).expect(200);
+
+      expect(response.body.meta).toMatchObject({ total: 1, page: 1, limit: 20 });
+      expect(dataOf<GroupBody[]>(response)[0]?.course.isLastCourse).toBe(true);
+    });
+
+    it('переносит группу в другой филиал и на другой курс', async () => {
+      const token = await actor('Permission.Groups.Update');
+      const { branchId, courseId } = scene();
+      const other = store.addBranch({ name: 'Profsous' });
+      const advanced = store.addCourse('Frontend Advanced');
+      const group = store.addGroup(branchId, courseId, 'Frontend-1');
+
+      const response = await send('put', `/api/v1/groups/${group.id}`, token, {
+        branchId: other.id,
+        courseId: advanced.id,
+      }).expect(200);
+
+      expect(dataOf<GroupBody>(response)).toMatchObject({
+        branch: { id: other.id, name: 'Profsous' },
+        course: { id: advanced.id, title: 'Frontend Advanced' },
+      });
+    });
+
+    it('409 на перенос, если в филиале назначения такая группа уже есть', async () => {
+      const token = await actor('Permission.Groups.Update');
+      const { branchId, courseId } = scene();
+      const other = store.addBranch({ name: 'Profsous' });
+      const group = store.addGroup(branchId, courseId, 'Frontend-1');
+      store.addGroup(other.id, courseId, 'Frontend-1');
+
+      await send('put', `/api/v1/groups/${group.id}`, token, { branchId: other.id }).expect(409);
+      expect(store.groups.get(group.id)?.branch.id).toBe(branchId);
+    });
+
+    it('PUT меняет статус и очищает дату пустой строкой', async () => {
+      const token = await actor('Permission.Groups.Update');
+      const { branchId, courseId } = scene();
+      const group = store.addGroup(branchId, courseId, 'Frontend-1', {
+        startDate: new Date('2026-09-01T00:00:00.000Z'),
+        capacity: 16,
+      });
+
+      const response = await send('put', `/api/v1/groups/${group.id}`, token, {
+        status: GroupStatus.ACTIVE,
+        startDate: '',
+      }).expect(200);
+
+      const body = dataOf<GroupBody>(response);
+      expect(body.status).toBe(GroupStatus.ACTIVE);
+      expect(body.startDate).toBeNull();
+      // Не переданная вместимость осталась прежней.
+      expect(body.capacity).toBe(16);
+    });
+
+    it('400, если новая дата окончания раньше даты начала, лежащей в БД', async () => {
+      const token = await actor('Permission.Groups.Update');
+      const { branchId, courseId } = scene();
+      const group = store.addGroup(branchId, courseId, 'Frontend-1', {
+        startDate: new Date('2026-09-01T00:00:00.000Z'),
+      });
+
+      await send('put', `/api/v1/groups/${group.id}`, token, { endDate: '2026-08-01' }).expect(400);
+    });
+
+    it('право на просмотр групп не даёт права на создание', async () => {
+      const token = await actor('Permission.Groups.Views');
+      const { branchId, courseId } = scene();
+
+      await get('/api/v1/groups', token).expect(200);
+      await send('post', '/api/v1/groups', token, {
+        name: 'Frontend-1',
+        courseId,
+        branchId,
+      }).expect(403);
+    });
+
+    it('удаляет группу; 404 на неизвестную, 400 на не-UUID', async () => {
+      const token = await actor('Permission.Groups.Delete');
+      const { branchId, courseId } = scene();
+      const group = store.addGroup(branchId, courseId, 'Frontend-1');
+
+      const response = await send('delete', `/api/v1/groups/${group.id}`, token).expect(200);
+      expect(response.body.data).toEqual({ id: group.id, name: 'Frontend-1' });
+      expect(store.groups.has(group.id)).toBe(false);
+
+      await send('delete', `/api/v1/groups/${randomUUID()}`, token).expect(404);
+      await send('delete', '/api/v1/groups/не-uuid', token).expect(400);
+    });
+
+    it('удаление группы освобождает курс и филиал', async () => {
+      const groups = await actor('Permission.Groups.Delete');
+      const courses = await actor('Permission.Courses.Delete');
+      const { branchId, courseId } = scene();
+      const group = store.addGroup(branchId, courseId, 'Frontend-1');
+
+      await send('delete', `/api/v1/courses/${courseId}`, courses).expect(409);
+      await send('delete', `/api/v1/groups/${group.id}`, groups).expect(200);
+      await send('delete', `/api/v1/courses/${courseId}`, courses).expect(200);
     });
   });
 
@@ -910,10 +1396,17 @@ describe('Справочники учебного контура (e2e, хран�
           '/api/v1/rooms/{id}',
           '/api/v1/courses',
           '/api/v1/courses/{id}',
+          '/api/v1/groups',
+          '/api/v1/groups/{id}',
         ]),
       );
 
-      for (const path of ['/api/v1/branches', '/api/v1/rooms', '/api/v1/courses']) {
+      for (const path of [
+        '/api/v1/branches',
+        '/api/v1/rooms',
+        '/api/v1/courses',
+        '/api/v1/groups',
+      ]) {
         expect(Object.keys(document.paths[path]?.post?.responses ?? {})).toContain('201');
       }
     });

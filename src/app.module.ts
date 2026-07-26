@@ -6,6 +6,7 @@ import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
+import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
 import { MailerModule } from './mailer/mailer.module';
@@ -34,6 +35,7 @@ import { StudentsModule } from './students/students.module';
     BranchesModule,
     RoomsModule,
     CoursesModule,
+    GroupsModule,
     HealthModule,
   ],
   providers: [
