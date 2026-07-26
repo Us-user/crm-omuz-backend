@@ -6,6 +6,7 @@ import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
+import { GroupMentorsModule } from './group-mentors/group-mentors.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
@@ -37,6 +38,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     RoomsModule,
     CoursesModule,
     GroupsModule,
+    GroupMentorsModule,
     SyllabusModule,
     HealthModule,
   ],

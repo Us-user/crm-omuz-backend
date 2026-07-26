@@ -23,9 +23,10 @@
 //   Group  — учебная группа (ТЗ 5.5): курс + филиал + сроки + вместимость;
 //   SyllabusLesson — урок программы курса («Day N», ТЗ 5.6);
 //   SyllabusLessonGroup — «Show to group»: каким группам урок показан;
-//   ResourceFile   — материал урока (ссылка на внешнее хранилище).
+//   ResourceFile   — материал урока (ссылка на внешнее хранилище);
+//   GroupMentor    — ментор группы с ролью Teaching/Support (ТЗ 5.5).
 //
-// Расписание и состав групп (GroupMentor, ScheduleSlot, GroupStudent, Enrollment)
+// Расписание и состав групп (ScheduleSlot, GroupStudent, Enrollment)
 // добавляются следующими кусками Фазы 3.
 
 generator client {
@@ -187,6 +188,10 @@ model Employee {
   /// Позиции сотрудника (ТЗ 5.14: Position — мультивыбор). Права сотрудника —
   /// объединение прав всех этих позиций (ТЗ 3.2).
   positions EmployeePosition[]
+
+  /// Группы, где сотрудник ведёт занятия или помогает (ТЗ 5.5).
+  /// Отсюда же строится раздел «Groups» в профиле ментора (ТЗ 5.4).
+  mentorGroups GroupMentor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -527,6 +532,9 @@ model Group {
   /// Уроки силлабуса, открытые этой группе («Show to group», ТЗ 5.6).
   visibleLessons SyllabusLessonGroup[]
 
+  /// Менторы группы (ТЗ 5.5: «менторы (несколько, роли Teaching/Support)»).
+  mentors GroupMentor[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -662,4 +670,45 @@ model ResourceFile {
 
   @@index([lessonId])
   @@map("resource_files")
+}
+
+// ────────────────────────── Менторы группы (ТЗ 5.5) ──────────────────────────
+
+/// Роль ментора в группе (ТЗ 5.5: «менторы (несколько, роли Teaching/Support)»).
+enum GroupMentorRole {
+  /// Ведёт занятия. Именно по часам этой роли считается зарплата ментора
+  /// («часы по фактически проведённым занятиям × ставка», ТЗ 5.16).
+  TEACHING
+  /// Помогает на занятиях: разбирает задачи, подхватывает отстающих.
+  SUPPORT
+}
+
+/// Ментор группы (ТЗ 5.5). У группы их несколько, у каждого своя роль.
+///
+/// Позиция «Mentor» для назначения **не требуется** (решение сессии 0010):
+/// правило пришлось бы опирать на название позиции, а название редактируется
+/// администратором (`/positions`), и `Mentor` не помечена `isSystem` — как
+/// только позицию переименовали бы, назначение менторов молча сломалось бы.
+/// Заодно руководитель, который сам ведёт занятия, не попадает под запрет.
+///
+/// Каскады с обеих сторон: назначение — это связь, а не самостоятельная запись
+/// со своей историей (как `EmployeePosition`). Удалять группу или сотрудника
+/// ради сохранения строки о назначении незачем.
+model GroupMentor {
+  groupId    String @db.Uuid
+  employeeId String @db.Uuid
+
+  group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  role GroupMentorRole @default(TEACHING)
+
+  assignedAt DateTime @default(now())
+
+  /// Один сотрудник в группе ровно один раз: две роли одновременно означали бы,
+  /// что часы занятия посчитаны дважды. Роль меняется правкой назначения.
+  @@id([groupId, employeeId])
+  /// Обратный обход: группы конкретного ментора (раздел «Groups» профиля, ТЗ 5.4).
+  @@index([employeeId])
+  @@map("group_mentors")
 }
