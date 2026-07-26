@@ -103,4 +103,5 @@
    argon2id, нормализация телефона в E.164, `POST /auth/register` и `POST /auth/login`.
 
 ## Коммит
-- `Фаза 0: каркас NestJS, конвенции API, health, Docker и CI` (хеш — см. ниже).
+- `780a489` — «Фаза 0: каркас NestJS, конвенции API, health, Docker и CI»
+  (60 файлов, запушено в `main` → https://github.com/Us-user/crm-omuz-backend).
