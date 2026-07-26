@@ -18,6 +18,7 @@ import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { StudentsModule } from './students/students.module';
+import { SyllabusModule } from './syllabus/syllabus.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { StudentsModule } from './students/students.module';
     RoomsModule,
     CoursesModule,
     GroupsModule,
+    SyllabusModule,
     HealthModule,
   ],
   providers: [

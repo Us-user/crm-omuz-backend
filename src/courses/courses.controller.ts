@@ -29,8 +29,8 @@ import {
 } from './dto';
 
 /**
- * Каталог курсов (ТЗ 5.6). Силлабус (`/courses/{id}/lessons`) и счётчик групп
- * добавляются следующими кусками Фазы 3.
+ * Каталог курсов (ТЗ 5.6). Программа курса живёт рядом, в `SyllabusController`
+ * (`/courses/{courseId}/lessons`): у неё свои права и свой набор правил.
  */
 @ApiTags('Courses')
 @ApiBearerAuth('access-token')

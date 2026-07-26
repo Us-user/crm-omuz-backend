@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 3 из 14 · 32 из 97 пунктов (~33%) — Фаза 0: 11/13 · **Фаза 1: 9/9 (закрыта)** · **Фаза 2: 8/8 (закрыта)** · Фаза 3: 4/10
+**Общий прогресс:** Фаза 3 из 14 · 33 из 97 пунктов (~34%) — Фаза 0: 11/13 · **Фаза 1: 9/9 (закрыта)** · **Фаза 2: 8/8 (закрыта)** · Фаза 3: 5/10
 
 ---
 
@@ -65,10 +65,10 @@
 ## Фаза 3 — Учебный контур: справочники и структура · ТЗ 5.5, 5.6, 5.10, 5.17
 Цель: филиалы, курсы с силлабусом, комнаты, группы с расписанием и составом.
 
-- [~] Модели: `Branch`, `Course`, `SyllabusLesson`, `ResourceFile`, `Room`, `Group`, `GroupMentor`, `ScheduleSlot`, `GroupStudent`, `Enrollment` — готовы `Branch`, `Room`, `Course`, `Group` (+ `Student.branchId`/`Employee.branchId` по ТЗ 3.3); силлабус, менторы группы, расписание и состав — следующими кусками
+- [~] Модели: `Branch`, `Course`, `SyllabusLesson`, `ResourceFile`, `Room`, `Group`, `GroupMentor`, `ScheduleSlot`, `GroupStudent`, `Enrollment` — готовы `Branch`, `Room`, `Course`, `Group`, `SyllabusLesson`, `ResourceFile` (+ `SyllabusLessonGroup` под «Show to group», + `Student.branchId`/`Employee.branchId` по ТЗ 3.3); менторы группы, расписание и состав — следующими кусками
 - [x] Branches CRUD (`/branches`) — счётчики аудиторий/групп/студентов/сотрудников в списке; филиал с привязанными записями не удаляется (409)
 - [x] Courses CRUD + поля (Fee, Is last course, цвета, лого, длительность) (`/courses`) — `fee` в `DECIMAL(12,2)`, длительность парой «число + единица»; «кол-во групп» в карточке, курс с группами не удаляется (409)
-- [ ] Syllabus: уроки (Day N, Type Lecture/Practice/Exam, Show to group), файлы (`/courses/{id}/lessons`, `/lessons/{lid}/files`)
+- [x] Syllabus: уроки (Day N, Type Lecture/Practice/Exam, Show to group), файлы (`/courses/{id}/lessons`, `/lessons/{lid}/files`) — номер дня не уникален (в один день бывают лекция и практика); урок ищется внутри своего курса (404 на чужой); «Show to group» только группам того же курса (422); материалы — **ссылки** на внешнее хранилище (решение сессии 0009), два перечисления по ТЗ: `kind` (зачем) и `fileType` (что это)
 - [x] Rooms CRUD (`/rooms`) — привязка к филиалу обязательна, название уникально внутри филиала
 - [x] Groups CRUD + фильтры Branch/Status/Course (`/groups`) — курс и филиал обязательны; статусы `RECRUITING`/`ACTIVE`/`FINISHED`/`CANCELLED` (решение сессии 0008); название уникально внутри филиала; счётчики категорий активности появятся с журналом (Фаза 5)
 - [ ] Менторы группы (роли Teaching/Support) (`/groups/{id}/mentors`)

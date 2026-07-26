@@ -222,6 +222,10 @@ npm run seed:admin -- --phone=+992901234567 --email=director@omuz.tj \
 | `GET/PUT/DELETE /api/v1/courses/{id}` | Карточка, правка, удаление курса | `Permission.Courses.Views` / `.Update` / `.Delete` |
 | `GET/POST /api/v1/groups` | Учебные группы: список с фильтрами Branch/Course/Status, создание (ТЗ 5.5) | `Permission.Groups.Views` / `.Create` |
 | `GET/PUT/DELETE /api/v1/groups/{id}` | Карточка, правка, удаление группы | `Permission.Groups.Views` / `.Update` / `.Delete` |
+| `GET/POST /api/v1/courses/{courseId}/lessons` | Программа курса: уроки «Day N», добавление (ТЗ 5.6) | `Permission.Syllabus.Views` / `.Create` |
+| `GET/PUT/DELETE /api/v1/courses/{courseId}/lessons/{lessonId}` | Карточка, правка, удаление урока | `Permission.Syllabus.Views` / `.Update` / `.Delete` |
+| `GET/POST /api/v1/courses/{courseId}/lessons/{lessonId}/files` | Материалы урока: список, добавление ссылки | `Permission.Syllabus.Views` / `.Create` |
+| `DELETE /api/v1/courses/{courseId}/lessons/{lessonId}/files/{fileId}` | Удаление материала | `Permission.Syllabus.Delete` |
 
 Правила справочников:
 
@@ -244,6 +248,27 @@ npm run seed:admin -- --phone=+992901234567 --email=director@omuz.tj \
   раньше даты начала — 400; `durationUnit` без `durationValue` — тоже 400;
 - пустая строка в необязательном поле `PUT` **очищает** его (включая даты), а не переданное
   поле остаётся прежним.
+
+### Силлабус курса (ТЗ 5.6)
+
+Программа курса вложена в сам курс — она не существует отдельно от него, и адрес урока
+сам подтверждает, какому курсу он принадлежит.
+
+- **номер дня («Day N») не уникален**: в один учебный день может стоять и лекция,
+  и практика. Номер задаёт порядок в списке, а не тождество урока;
+- **урок ищется внутри своего курса**: через `/courses/A/lessons/{id}` урок курса B
+  не найдётся (404). То же для материала внутри урока — иначе адрес не защищал бы ничего;
+- **«Show to group»** (`visibleToGroupIds`) принимает только группы **этого же курса** —
+  422 с перечислением лишних. В `PUT` список **заменяет** мультивыбор целиком, пустой
+  массив снимает всех, а не переданное поле мультивыбор не трогает;
+- у урока два независимых перечисления из ТЗ: `type` занятия (`LECTURE`/`PRACTICE`/`EXAM`)
+  и `status` (`ACTIVE`/`INACTIVE` — скрыть урок, не теряя материалы);
+- у материала тоже два: `kind` — **зачем** файл (`LECTURE`/`PRACTICE`/`HOMEWORK`),
+  `fileType` — **что** это за файл (`PDF`, `VIDEO`, `LINK`…, для иконки и способа открытия);
+- **материалы — ссылки на внешнее хранилище**, а не загружаемые файлы: приём загрузок —
+  отдельный кусок инфраструктуры, модель к нему готова без миграции;
+- **удаление урока уносит его материалы и мультивыбор** (каскад). Отказа здесь нет:
+  файл вне урока адресовать нечем, а видимость — настройка экрана, а не данные.
 
 ### Управление правами
 
@@ -312,13 +337,14 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 - **Юнит** (`npm test`) — рядом с кодом, `*.spec.ts`, внешняя инфраструктура не нужна.
 - **E2E** (`npm run test:e2e`) — в `test/`:
   - `api-conventions.e2e-spec.ts`, `health-route.e2e-spec.ts`, `auth.e2e-spec.ts`,
-    `students.e2e-spec.ts`, `rbac.e2e-spec.ts` и `catalog.e2e-spec.ts` работают
-    **без** PostgreSQL и Redis:
+    `students.e2e-spec.ts`, `rbac.e2e-spec.ts`, `catalog.e2e-spec.ts` и
+    `syllabus.e2e-spec.ts` работают **без** PostgreSQL и Redis:
     поднимается настоящее Nest-приложение с реальными глобальными pipe/filter/interceptor,
     а зависимости подменены заглушками (репозитории — в памяти, так что сценарии
     «регистрация → вход → ротация → выход», перевод студента в сотрудники, управление
     правами — включая «выдали роль → доступ появился» и «выключили право в каталоге →
-    доступ пропал» — и связки учебного контура («группа держит курс и филиал»)
+    доступ пропал», связки учебного контура («группа держит курс и филиал») и правила
+    силлабуса («урок чужого курса не найдётся», «Show to group» только своим группам)
     проверяются на любой машине);
   - `health.e2e-spec.ts` требует поднятых PostgreSQL и Redis (запускается в CI
     и через `docker compose`).
@@ -345,6 +371,7 @@ src/
   rooms/       аудитории филиала — источник поля Room в расписании (ТЗ 5.10)
   seed/        npm run seed:admin — первый руководитель (позиция Director)
   students/    студенты (ТЗ 5.3); пока только перевод Студент → Сотрудник
+  syllabus/    программа курса: уроки «Day N», Show to group, материалы (ТЗ 5.6)
 prisma/        схема и миграции
 test/          e2e-тесты (supertest)
 ```

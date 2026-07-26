@@ -20,10 +20,13 @@
 //   Branch — филиал; к нему привязаны аудитории, студенты и сотрудники (ТЗ 3.3);
 //   Room   — аудитория филиала, источник поля «аудитория» в расписании;
 //   Course — курс каталога: стоимость, длительность, флаг последнего курса;
-//   Group  — учебная группа (ТЗ 5.5): курс + филиал + сроки + вместимость.
+//   Group  — учебная группа (ТЗ 5.5): курс + филиал + сроки + вместимость;
+//   SyllabusLesson — урок программы курса («Day N», ТЗ 5.6);
+//   SyllabusLessonGroup — «Show to group»: каким группам урок показан;
+//   ResourceFile   — материал урока (ссылка на внешнее хранилище).
 //
-// Силлабус и расписание (SyllabusLesson, ResourceFile, GroupMentor, ScheduleSlot,
-// GroupStudent, Enrollment) добавляются следующими кусками Фазы 3.
+// Расписание и состав групп (GroupMentor, ScheduleSlot, GroupStudent, Enrollment)
+// добавляются следующими кусками Фазы 3.
 
 generator client {
   provider = "prisma-client-js"
@@ -448,6 +451,10 @@ model Course {
   /// Группы, которые учатся по этому курсу (ТЗ 5.6: «кол-во групп» на карточке).
   groups Group[]
 
+  /// Программа курса (ТЗ 5.6 «Syllabus»). Урок без курса не имеет смысла,
+  /// поэтому связь каскадная: удаление курса уносит и его программу.
+  lessons SyllabusLesson[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -517,6 +524,9 @@ model Group {
   /// Ссылка на групповой чат (ТЗ 5.5: «Telegram-ссылка»).
   telegramUrl String?
 
+  /// Уроки силлабуса, открытые этой группе («Show to group», ТЗ 5.6).
+  visibleLessons SyllabusLessonGroup[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -530,4 +540,126 @@ model Group {
   /// Под фильтры и отчёты по датам (ТЗ 7).
   @@index([startDate])
   @@map("groups")
+}
+
+// ───────────────────── Силлабус курса и материалы (ТЗ 5.6) ────────────────────
+
+/// Тип занятия (ТЗ 5.6: Lecture / Practice / Exam).
+///
+/// `EXAM` здесь не просто ярлык: в журнале (ТЗ 5.8) на экзаменационном дне
+/// приход не начисляется, а балл идёт отдельным слагаемым `Exam`.
+enum LessonType {
+  LECTURE
+  PRACTICE
+  EXAM
+}
+
+/// Раздел урока, к которому относится материал (ТЗ 5.6: «файлы (Lecture/Practice/Homework)»).
+/// Отвечает на вопрос «зачем этот файл», а не «что это за файл».
+enum ResourceKind {
+  LECTURE
+  PRACTICE
+  HOMEWORK
+}
+
+/// `ResourceFileType` из ТЗ 5.6 — чем является сам материал. Отвечает
+/// на вопрос «что это за файл» и нужен экрану, чтобы выбрать иконку
+/// и способ открытия (скачать / проиграть / перейти по ссылке).
+enum ResourceFileType {
+  PDF
+  DOC
+  SLIDES
+  SPREADSHEET
+  IMAGE
+  VIDEO
+  AUDIO
+  ARCHIVE
+  /// Внешняя страница, а не файл (например, статья или репозиторий).
+  LINK
+  OTHER
+}
+
+/// Урок программы курса — «Day N» из ТЗ 5.6.
+///
+/// Номер дня **не уникален** внутри курса намеренно: в один учебный день
+/// вполне может стоять и лекция, и практика, а запрет на второй урок с тем же
+/// номером был бы придуманным правилом, которое оператору нечем обойти.
+/// Поэтому номер — это порядок в списке, а не идентификатор урока.
+model SyllabusLesson {
+  id String @id @default(uuid()) @db.Uuid
+
+  courseId String @db.Uuid
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  /// Номер учебного дня внутри курса («Day 1», «Day 2»…).
+  dayNumber Int
+
+  title       String
+  description String?
+
+  type   LessonType      @default(LECTURE)
+  status DirectoryStatus @default(ACTIVE)
+
+  /// Материалы урока (ТЗ 5.6). Каскад: файл вне урока адресовать нечем.
+  files ResourceFile[]
+
+  /// «Show to group» (ТЗ 5.6) — мультивыбор групп, которым урок открыт.
+  visibleToGroups SyllabusLessonGroup[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Программа курса всегда читается целиком и в порядке дней — этого индекса
+  /// хватает и на выборку, и на сортировку. Отдельных индексов по `status`
+  /// и `type` нет: любая выборка уже сужена курсом, внутри курса уроков десятки.
+  @@index([courseId, dayNumber])
+  @@map("syllabus_lessons")
+}
+
+/// «Show to group» (ТЗ 5.6): какой группе показан какой урок.
+///
+/// Каскад с обеих сторон — это настройка видимости, а не данные: удалённая
+/// группа не должна оставлять за собой строки, а восстанавливать «кому был
+/// показан урок» удалённой группы незачем.
+model SyllabusLessonGroup {
+  lessonId String @db.Uuid
+  groupId  String @db.Uuid
+
+  lesson SyllabusLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  group  Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([lessonId, groupId])
+  /// Обратный обход: что открыто этой группе (экран «Material» ментора, ТЗ 5.4).
+  @@index([groupId])
+  @@map("syllabus_lesson_groups")
+}
+
+/// Материал урока (ТЗ 5.6: «Resource: Title/Type/ResourceFileType»).
+///
+/// Хранится **ссылка** на внешнее хранилище, а не сам файл (решение сессии 0009,
+/// как `Course.logoUrl`): приём загрузок — отдельный сквозной кусок
+/// инфраструктуры, и модель к нему готова без миграции.
+model ResourceFile {
+  id String @id @default(uuid()) @db.Uuid
+
+  lessonId String         @db.Uuid
+  lesson   SyllabusLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  title String
+
+  /// Зачем файл (Lecture/Practice/Homework) и что это за файл — два разных
+  /// вопроса, и ТЗ 5.6 перечисляет их отдельно («Type» и «ResourceFileType»).
+  kind     ResourceKind     @default(LECTURE)
+  fileType ResourceFileType @default(OTHER)
+
+  url         String
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([lessonId])
+  @@map("resource_files")
 }
