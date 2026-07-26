@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { AccountStatus, Locale } from '@prisma/client';
 
+import { parseIsoDate } from '../common';
 import { PhoneService } from '../phone';
 import { TOKEN_TYPE } from './auth.constants';
 import type { AccountWithProfile } from './auth.repository';
@@ -194,20 +195,11 @@ export class AuthService {
 }
 
 /**
- * Разбирает дату рождения из `YYYY-MM-DD`. Формат уже проверен DTO, здесь
- * отсекаются несуществующие даты (`2004-02-30`) и даты из будущего.
+ * Разбирает дату рождения из `YYYY-MM-DD`. Формат уже проверен DTO, разбор
+ * и несуществующие даты — в `parseIsoDate`; здесь добавляется запрет будущего.
  */
 function parseBirthDate(value: string): Date {
-  const date = new Date(`${value}T00:00:00.000Z`);
-
-  // Сравнение с обратным преобразованием обязательно: `new Date` не отвергает
-  // лишний день, а молча переносит его на следующий месяц (`2004-02-30` → 1 марта).
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
-    throw new BadRequestException({
-      message: 'Некорректная дата рождения',
-      details: { birthDate: `Даты «${value}» не существует` },
-    });
-  }
+  const date = parseIsoDate(value, 'birthDate', 'Некорректная дата рождения');
 
   if (date.getTime() > Date.now()) {
     throw new BadRequestException({

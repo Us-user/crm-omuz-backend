@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 1 из 14 · 19 из 97 пунктов (~20%) — Фаза 0: 11/13 · Фаза 1: 8/9
+**Общий прогресс:** Фаза 2 из 14 · 20 из 97 пунктов (~21%) — Фаза 0: 11/13 · **Фаза 1: 9/9 (закрыта)**
 
 ---
 
@@ -44,7 +44,7 @@
 - [x] Ротация refresh (старый инвалидируется), серверные сессии
 - [x] `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/logout-all`
 - [x] Сброс пароля по email: `POST /auth/password/forgot`, `POST /auth/password/reset` (6-значный код, ~10 мин, лимит 3/час) — письмо через абстракцию `MailerService`; реальный провайдер подключается в Фазе 11
-- [ ] Основа перевода Студент → Сотрудник (сохранение логина и истории)
+- [x] Основа перевода Студент → Сотрудник (сохранение логина и истории) — `POST /students/{id}/promote-to-employee`: аккаунт переезжает на профиль сотрудника (логин не меняется), профиль студента остаётся с учебной историей, связь в `Employee.formerStudentId`, сессии гасятся
 
 ## Фаза 2 — Роли, позиции и права (RBAC) · ТЗ 3.2, 5.15
 Цель: гибкая система прав на каждом эндпоинте.
@@ -52,7 +52,7 @@
 - [ ] Модели: `Position`, `Permission`, `EmployeePosition`, `Role`
 - [ ] Каталог прав в нотации `Permission.<Раздел>.<Действие>`
 - [ ] Права сотрудника = union прав всех его позиций
-- [ ] Guard прав + декоратор `@RequirePermission(...)` на защищённых эндпоинтах
+- [ ] Guard прав + декоратор `@RequirePermission(...)` на защищённых эндпоинтах — в Фазе 1 сделана грубая заготовка `@RequireAccountType(...)` + `AccountTypeGuard` (фильтр «сотрудник/студент»); она должна встать рядом, а не вместо
 - [ ] CRUD позиций (`/positions`) + назначение прав из каталога
 - [ ] Administration → Users: назначение ролей (`/admin/users`, `/admin/users/{id}/roles`)
 - [ ] Administration → Permission: каталог (`GET/PUT /admin/permissions`)

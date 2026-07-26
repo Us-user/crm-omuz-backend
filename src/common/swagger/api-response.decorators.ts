@@ -1,5 +1,5 @@
 import type { Type } from '@nestjs/common';
-import { applyDecorators } from '@nestjs/common';
+import { applyDecorators, HttpStatus } from '@nestjs/common';
 import { ApiExtraModels, ApiOkResponse, ApiResponse, getSchemaPath } from '@nestjs/swagger';
 
 import { ApiErrorDto } from './api-error.dto';
@@ -14,14 +14,20 @@ const META_SCHEMA = {
   },
 };
 
-/** Документирует ответ `{ data: <Model> }`. */
+/**
+ * Документирует ответ `{ data: <Model> }`.
+ *
+ * `status` указывается там, где эндпоинт отвечает не 200: иначе в OpenAPI
+ * оказался бы код, которого сервер не возвращает.
+ */
 export const ApiDataResponse = <TModel extends Type<unknown>>(
   model: TModel,
-  options: { description?: string } = {},
+  options: { description?: string; status?: number } = {},
 ) =>
   applyDecorators(
     ApiExtraModels(model),
-    ApiOkResponse({
+    ApiResponse({
+      status: options.status ?? HttpStatus.OK,
       description: options.description,
       schema: {
         type: 'object',

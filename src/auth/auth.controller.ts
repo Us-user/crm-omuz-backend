@@ -42,7 +42,10 @@ export class AuthController {
       'Создаёт аккаунт с профилем студента и сразу выдаёт пару токенов. ' +
       'Подтверждение телефона или email не требуется (ТЗ 3.1).',
   })
-  @ApiDataResponse(AuthResponseDto, { description: 'Аккаунт создан' })
+  @ApiDataResponse(AuthResponseDto, {
+    description: 'Аккаунт создан',
+    status: HttpStatus.CREATED,
+  })
   @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.CONFLICT)
   register(@Body() dto: RegisterDto, @Req() request: Request): Promise<AuthResponseDto> {
     return this.auth.register(dto, requestContext(request));

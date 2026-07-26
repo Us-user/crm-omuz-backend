@@ -1,3 +1,4 @@
+export * from './dates/iso-date';
 export * from './dto/paginated';
 export * from './dto/pagination-query.dto';
 export * from './errors/business-rule.exception';

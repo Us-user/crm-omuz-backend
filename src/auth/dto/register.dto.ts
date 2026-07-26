@@ -11,11 +11,8 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { normalizeEmail, trimString } from '../../common';
+import { ISO_DATE_PATTERN, normalizeEmail, trimString } from '../../common';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../auth.constants';
-
-/** Дата без времени: `YYYY-MM-DD`. Разбор часового пояса не нужен и только вредит. */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Самостоятельная регистрация (ТЗ 3.1). Создаёт аккаунт типа `STUDENT`:
@@ -39,7 +36,7 @@ export class RegisterDto {
   @ApiProperty({ example: '2004-05-12', description: 'Дата рождения в формате YYYY-MM-DD' })
   @Transform(trimString)
   @IsString()
-  @Matches(ISO_DATE, { message: 'birthDate должен быть в формате YYYY-MM-DD' })
+  @Matches(ISO_DATE_PATTERN, { message: 'birthDate должен быть в формате YYYY-MM-DD' })
   birthDate!: string;
 
   @ApiProperty({ example: 'г. Душанбе, ул. Рудаки, 25', maxLength: 300 })

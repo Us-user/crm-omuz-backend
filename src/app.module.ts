@@ -11,6 +11,7 @@ import { PhoneModule } from './phone/phone.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { RedisModule } from './redis/redis.module';
+import { StudentsModule } from './students/students.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { RedisModule } from './redis/redis.module';
     MailerModule,
     PhoneModule,
     AuthModule,
+    StudentsModule,
     HealthModule,
   ],
   providers: [

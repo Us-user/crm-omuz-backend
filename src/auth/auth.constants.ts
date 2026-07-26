@@ -10,6 +10,9 @@ export const JWT_ACCESS_STRATEGY = 'jwt-access';
 /** Ключ метаданных декоратора `@Public()`. */
 export const IS_PUBLIC_KEY = 'auth:isPublic';
 
+/** Ключ метаданных декоратора `@RequireAccountType()`. */
+export const ACCOUNT_TYPES_KEY = 'auth:accountTypes';
+
 /** Тип токена в ответе (`Authorization: Bearer <access>`, ТЗ 3.5). */
 export const TOKEN_TYPE = 'Bearer';
 

@@ -6,6 +6,10 @@
 //   Session  — серверные refresh-сессии (одна строка = одно устройство);
 //   PasswordResetCode — одноразовый 6-значный код сброса пароля по email.
 //
+// Перевод Студент → Сотрудник (ТЗ 3.1): аккаунт переезжает с профиля студента
+// на профиль сотрудника (`Employee.formerStudentId` хранит связь с прошлым),
+// логин при этом не меняется, а строка `Student` со всей учебной историей живёт дальше.
+//
 // Доменные модули (Branch, Position, Group, …) добавляются в Фазах 2–3; поля-связи
 // к ним появятся в профилях тогда же.
 
@@ -110,6 +114,11 @@ model Student {
 
   status StudentStatus @default(ACTIVE)
 
+  /// Сотрудник, которым стал этот студент (ТЗ 3.1: выпускник → ментор).
+  /// Профиль студента при переводе не удаляется и не копируется — учебная
+  /// история остаётся здесь, а связь позволяет её найти со стороны сотрудника.
+  promotedEmployee Employee? @relation("StudentPromotion")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -143,6 +152,12 @@ model Employee {
 
   status  EmployeeStatus @default(ACTIVE)
   hiredAt DateTime?      @db.Date
+
+  /// Студент, из которого вырос этот сотрудник (ТЗ 3.1). Заполняется переводом
+  /// Студент → Сотрудник; уникален, потому что один профиль студента
+  /// переводится ровно один раз.
+  formerStudentId String?  @unique @db.Uuid
+  formerStudent   Student? @relation("StudentPromotion", fields: [formerStudentId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -179,8 +194,9 @@ model Session {
 /// Одноразовый код сброса пароля по email (ТЗ 3.1, 5.1): 6 цифр, ~10 минут,
 /// не более 3 запросов в час и 3 попыток ввода на код.
 ///
-/// Хранится argon2id-хеш, а не сам код: пространство из 10^6 значений
-/// восстанавливается из быстрого хеша мгновенно, если утечёт дамп БД.
+/// Хранится HMAC-SHA256 с серверным секретом, а не сам код: пространство из 10^6
+/// значений восстанавливается из обычного хеша мгновенно, если утечёт дамп БД,
+/// а ключа HMAC в дампе нет (см. `ResetCodeService`).
 model PasswordResetCode {
   id        String  @id @default(uuid()) @db.Uuid
   accountId String  @db.Uuid
