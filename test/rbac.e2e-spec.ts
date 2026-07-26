@@ -15,6 +15,7 @@ import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+import { buildOpenApiDocument } from 'src/swagger';
 import { PERMISSION_CATALOG } from 'src/rbac/permission-catalog';
 import { AdminUsersRepository } from 'src/rbac/admin-users.repository';
 import { PositionsRepository } from 'src/rbac/positions.repository';
@@ -995,11 +996,10 @@ describe('RBAC: позиции и администрирование (e2e, хр�
   });
 
   describe('OpenAPI', () => {
-    it('документ описывает новые маршруты и коды ответов', async () => {
-      const response = await request(app.getHttpServer()).get('/api/v1/docs/json').expect(200);
-      const document = response.body as {
-        paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
-      };
+    it('документ описывает новые маршруты и коды ответов', () => {
+      // Документ собирается напрямую, а не читается с `/api/v1/docs/json`:
+      // маршрут монтируется только при `SWAGGER_ENABLED=true`, а в CI Swagger выключен.
+      const document = buildOpenApiDocument(app);
 
       expect(Object.keys(document.paths)).toEqual(
         expect.arrayContaining([
