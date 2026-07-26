@@ -12,26 +12,26 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 0 из 14 · 0%
+**Общий прогресс:** Фаза 0 из 14 · ~6% (Фаза 0 закрыта на 9/13 пунктов)
 
 ---
 
 ## Фаза 0 — Фундамент и инфраструктура
 Цель: работающий каркас приложения, окружение, сквозные конвенции API.
 
-- [ ] Инициализация NestJS + TypeScript (strict), структура модульного монолита
-- [ ] Config-модуль: чтение и валидация `.env` (schema), `.env.example`
-- [ ] Подключение Prisma + PostgreSQL, первая миграция (пустая/health)
-- [ ] Redis + BullMQ: подключение, базовая очередь
-- [ ] Docker + `docker-compose` (app, postgres, redis)
-- [ ] Логирование Pino (структурированное, request-id)
-- [ ] Глобальный формат ответа `{ data, meta }` и ошибок `{ error: { code, message, details } }`
-- [ ] Базовые DTO: пагинация (`page`, `limit`=20), сортировка, поиск, доменные фильтры
-- [ ] Глобальный `ValidationPipe` (class-validator), обработка HTTP-кодов 400/401/403/404/409/422/500
-- [ ] Swagger/OpenAPI на префиксе `/api/v1`
-- [ ] Health-check эндпоинт `GET /health`
-- [ ] Настройка Jest + supertest (unit + e2e каркас)
-- [ ] CI-заготовка (lint + test) — опционально
+- [x] Инициализация NestJS + TypeScript (strict), структура модульного монолита
+- [x] Config-модуль: чтение и валидация `.env` (schema), `.env.example`
+- [~] Подключение Prisma + PostgreSQL, первая миграция (пустая/health) — код и миграция готовы, **не применены** (нет доступа к локальной БД)
+- [~] Redis + BullMQ: подключение, базовая очередь — код готов, **не проверен вживую** (Redis не запущен)
+- [~] Docker + `docker-compose` (app, postgres, redis) — файлы готовы, **не проверены** (Docker не установлен)
+- [x] Логирование Pino (структурированное, request-id)
+- [x] Глобальный формат ответа `{ data, meta }` и ошибок `{ error: { code, message, details } }`
+- [x] Базовые DTO: пагинация (`page`, `limit`=20), сортировка, поиск, доменные фильтры
+- [x] Глобальный `ValidationPipe` (class-validator), обработка HTTP-кодов 400/401/403/404/409/422/500
+- [x] Swagger/OpenAPI на префиксе `/api/v1`
+- [x] Health-check эндпоинт `GET /health`
+- [x] Настройка Jest + supertest (unit + e2e каркас)
+- [~] CI-заготовка (lint + test) — workflow написан, **не прогонялся** (первый запуск будет на GitHub)
 
 ## Фаза 1 — Идентичность и аутентификация (Auth) · ТЗ 3.1, 5.1
 Цель: аккаунты, вход, сессии, сброс пароля.
