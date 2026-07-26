@@ -105,12 +105,17 @@ export class GroupsService {
     // Филиал берётся из запроса, если его меняют, иначе — текущий: тёзку нужно
     // искать там, где группа окажется после правки, а не в прежнем филиале.
     const branchId = dto.branchId ?? existing.branch.id;
-    if (dto.branchId !== undefined && dto.branchId !== existing.branch.id) {
-      await this.assertBranchExists(dto.branchId);
+    const branchChanged = branchId !== existing.branch.id;
+    if (branchChanged) {
+      await this.assertBranchExists(branchId);
     }
 
-    if (dto.name !== undefined || branchId !== existing.branch.id) {
+    if (dto.name !== undefined || branchChanged) {
       await this.assertNameFree(branchId, dto.name ?? existing.name, id);
+    }
+
+    if (branchChanged) {
+      await this.assertScheduleFreeOfRooms(id);
     }
 
     // Сроки проверяются в том виде, в котором группа окажется после правки:
@@ -146,12 +151,13 @@ export class GroupsService {
   }
 
   /**
-   * Удаление группы. Ограничений пока нет: расписание, состав студентов и
-   * журнал появятся следующими кусками Фазы 3 и Фазой 5 — тогда сюда встанет
-   * та же проверка «к группе привязаны…», что уже стоит в филиалах.
+   * Удаление группы. Ограничений пока нет: состав студентов и журнал появятся
+   * следующим куском Фазы 3 и Фазой 5 — тогда сюда встанет та же проверка
+   * «к группе привязаны…», что уже стоит в филиалах.
    *
-   * Назначения менторов и видимость уроков уходят каскадом и отказа не вызывают:
-   * это связи, а не самостоятельные записи со своей историей.
+   * Назначения менторов, видимость уроков и расписание уходят каскадом и отказа
+   * не вызывают: это части группы, а не самостоятельные записи со своей историей.
+   * Аудитории при этом остаются — каскад уносит слоты, а не комнаты.
    */
   async remove(id: string): Promise<GroupDeletedDto> {
     const group = await this.require(id);
@@ -190,6 +196,23 @@ export class GroupsService {
     if (twin && twin.id !== exceptId) {
       throw new ConflictException(`Группа «${twin.name}» в этом филиале уже есть`);
     }
+  }
+
+  /**
+   * Перенос в другой филиал упирается в расписание: аудитория обязана быть
+   * в филиале группы (`GroupScheduleService`), а комнаты вместе с группой
+   * не переезжают. Молча снять аудитории со всех занятий нельзя — расписание
+   * потеряло бы места проведения, и никто бы об этом не узнал.
+   */
+  private async assertScheduleFreeOfRooms(groupId: string): Promise<void> {
+    const slots = await this.repository.countScheduleSlotsWithRoom(groupId);
+    if (slots === 0) return;
+
+    throw new BusinessRuleException(
+      `Занятия группы стоят в аудиториях текущего филиала (${String(slots)}) — ` +
+        'уберите аудитории из расписания перед переносом',
+      { scheduleSlots: slots },
+    );
   }
 }
 

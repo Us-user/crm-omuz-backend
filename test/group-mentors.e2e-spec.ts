@@ -182,10 +182,11 @@ class InMemoryMentorsStore {
     return Promise.resolve(mentor);
   }
 
-  delete(groupId: string, employeeId: string): Promise<void> {
+  /** Возвращает число очищенных слотов расписания — в этом наборе их нет. */
+  delete(groupId: string, employeeId: string): Promise<number> {
     this.assignments.delete(key(groupId, employeeId));
 
-    return Promise.resolve();
+    return Promise.resolve(0);
   }
 }
 
@@ -651,6 +652,10 @@ describe('Менторы группы (e2e, хранилище в памяти)'
         groupId: group.id,
         employeeId: teacher.id,
         fullName: 'Раҳимов Фаррух',
+        // Занятий у группы в этом наборе нет. Сама очистка слотов живёт
+        // в транзакции репозитория, а он здесь подменён — проверить её
+        // можно только на настоящей БД.
+        clearedSlots: 0,
       });
 
       const list = await get(`/api/v1/groups/${group.id}/mentors`, token).expect(200);

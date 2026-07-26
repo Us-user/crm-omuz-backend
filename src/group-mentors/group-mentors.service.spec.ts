@@ -59,7 +59,7 @@ describe('GroupMentorsService', () => {
       findOne: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       updateRole: jest.fn().mockImplementation(() => Promise.resolve(row())),
-      delete: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(0),
     };
 
     service = new GroupMentorsService(repository as unknown as GroupMentorsRepository);
@@ -309,6 +309,16 @@ describe('GroupMentorsService', () => {
         groupId: GROUP_ID,
         employeeId: EMPLOYEE_ID,
         fullName: 'Раҳимов Фаррух',
+        clearedSlots: 0,
+      });
+    });
+
+    it('сообщает, сколько занятий осталось без ведущего', async () => {
+      repository.findOne.mockResolvedValue(row());
+      repository.delete.mockResolvedValue(2);
+
+      await expect(service.remove(GROUP_ID, EMPLOYEE_ID)).resolves.toMatchObject({
+        clearedSlots: 2,
       });
     });
 

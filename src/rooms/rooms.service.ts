@@ -80,8 +80,21 @@ export class RoomsService {
     return toDto(room);
   }
 
+  /**
+   * Аудитория удаляется только свободной. Внешний ключ расписания стоит
+   * `RESTRICT`, поэтому БД такое удаление и так не пропустит, но сервис
+   * проверяет заранее — иначе наружу ушла бы обезличенная ошибка внешнего
+   * ключа вместо причины (так же устроено удаление филиала).
+   */
   async remove(id: string): Promise<RoomDeletedDto> {
     const room = await this.require(id);
+
+    const slots = await this.repository.countScheduleSlots(id);
+    if (slots > 0) {
+      throw new ConflictException(
+        `В аудитории стоят занятия (${String(slots)}) — измените расписание групп перед удалением`,
+      );
+    }
 
     await this.repository.delete(id);
     this.logger.log(`Удалена аудитория ${room.name} (${id})`);

@@ -50,6 +50,7 @@ describe('GroupsService', () => {
       | 'findByName'
       | 'findBranch'
       | 'findCourse'
+      | 'countScheduleSlotsWithRoom'
       | 'create'
       | 'update'
       | 'delete'
@@ -64,6 +65,7 @@ describe('GroupsService', () => {
       findByName: jest.fn().mockResolvedValue(null),
       findBranch: jest.fn().mockResolvedValue({ id: BRANCH_ID, name: 'Sadbarg' }),
       findCourse: jest.fn().mockResolvedValue({ id: COURSE_ID, title: 'Frontend Basic' }),
+      countScheduleSlotsWithRoom: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -271,6 +273,31 @@ describe('GroupsService', () => {
         ConflictException,
       );
       expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('422 на перенос, если занятия стоят в аудиториях текущего филиала', async () => {
+      repository.findBranch.mockResolvedValue({ id: OTHER_BRANCH_ID, name: 'Profsous' });
+      repository.countScheduleSlotsWithRoom.mockResolvedValue(2);
+
+      await expect(service.update(GROUP_ID, { branchId: OTHER_BRANCH_ID })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('расписание без аудиторий переносу не мешает', async () => {
+      repository.findBranch.mockResolvedValue({ id: OTHER_BRANCH_ID, name: 'Profsous' });
+
+      await service.update(GROUP_ID, { branchId: OTHER_BRANCH_ID });
+
+      expect(repository.countScheduleSlotsWithRoom).toHaveBeenCalledWith(GROUP_ID);
+      expect(repository.update).toHaveBeenCalled();
+    });
+
+    it('без смены филиала расписание не проверяется', async () => {
+      await service.update(GROUP_ID, { name: 'Frontend-1 (вечер)' });
+
+      expect(repository.countScheduleSlotsWithRoom).not.toHaveBeenCalled();
     });
 
     it('переводит группу на другой курс', async () => {

@@ -29,7 +29,14 @@ describe('RoomsService', () => {
   let repository: jest.Mocked<
     Pick<
       RoomsRepository,
-      'findMany' | 'findById' | 'findByName' | 'findBranch' | 'create' | 'update' | 'delete'
+      | 'findMany'
+      | 'findById'
+      | 'findByName'
+      | 'findBranch'
+      | 'countScheduleSlots'
+      | 'create'
+      | 'update'
+      | 'delete'
     >
   >;
   let service: RoomsService;
@@ -40,6 +47,7 @@ describe('RoomsService', () => {
       findById: jest.fn().mockResolvedValue(row()),
       findByName: jest.fn().mockResolvedValue(null),
       findBranch: jest.fn().mockResolvedValue({ id: BRANCH_ID, name: 'Sadbarg' }),
+      countScheduleSlots: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -202,6 +210,14 @@ describe('RoomsService', () => {
       repository.findById.mockResolvedValue(null);
 
       await expect(service.remove(ROOM_ID)).rejects.toBeInstanceOf(NotFoundException);
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('409 на аудиторию, в которой стоят занятия, с их числом', async () => {
+      repository.countScheduleSlots.mockResolvedValue(3);
+
+      await expect(service.remove(ROOM_ID)).rejects.toThrow(ConflictException);
+      await expect(service.remove(ROOM_ID)).rejects.toThrow(/\(3\)/);
       expect(repository.delete).not.toHaveBeenCalled();
     });
   });

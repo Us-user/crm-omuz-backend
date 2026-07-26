@@ -1,3 +1,4 @@
+export * from './dates/day-time';
 export * from './dates/iso-date';
 export * from './dto/paginated';
 export * from './dto/pagination-query.dto';

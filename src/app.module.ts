@@ -7,6 +7,7 @@ import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
+import { GroupScheduleModule } from './group-schedule/group-schedule.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
@@ -39,6 +40,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     CoursesModule,
     GroupsModule,
     GroupMentorsModule,
+    GroupScheduleModule,
     SyllabusModule,
     HealthModule,
   ],

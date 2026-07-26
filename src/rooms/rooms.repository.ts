@@ -107,6 +107,15 @@ export class RoomsRepository {
     return this.prisma.branch.findUnique({ where: { id }, select: { id: true, name: true } });
   }
 
+  /**
+   * Сколько занятий стоит в этой аудитории (ТЗ 5.5, расписание групп).
+   * Отдельный запрос, а не `_count` в выборке: счётчик нужен только удалению,
+   * а в `_count` он считался бы на каждую строку списка аудиторий.
+   */
+  countScheduleSlots(roomId: string): Promise<number> {
+    return this.prisma.scheduleSlot.count({ where: { roomId } });
+  }
+
   create(input: RoomWriteInput): Promise<RoomRow> {
     return this.prisma.room.create({ data: input, select: ROOM_SELECT });
   }

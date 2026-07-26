@@ -129,9 +129,26 @@ export class GroupMentorsRepository {
     });
   }
 
-  async delete(groupId: string, employeeId: string): Promise<void> {
-    await this.prisma.groupMentor.delete({
-      where: { groupId_employeeId: { groupId, employeeId } },
-    });
+  /**
+   * Снятие ментора с группы. Одной транзакцией с ним снимается и авторство
+   * занятий этой группы (ТЗ 5.5): в расписании ментором может стоять только
+   * ментор группы, и оставить бывшего в слотах значило бы разойтись с этим
+   * правилом. Занятия при этом остаются — исчезает только имя ведущего.
+   *
+   * Возвращается число очищенных слотов: снимающий должен узнать, что
+   * расписание осталось без преподавателя, а не обнаружить это в календаре.
+   */
+  async delete(groupId: string, employeeId: string): Promise<number> {
+    const [cleared] = await this.prisma.$transaction([
+      this.prisma.scheduleSlot.updateMany({
+        where: { groupId, mentorId: employeeId },
+        data: { mentorId: null },
+      }),
+      this.prisma.groupMentor.delete({
+        where: { groupId_employeeId: { groupId, employeeId } },
+      }),
+    ]);
+
+    return cleared.count;
   }
 }

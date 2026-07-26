@@ -636,6 +636,9 @@ describe('Справочники учебного контура (e2e, хран�
         findById: (id: string) => store.findRoomById(id),
         findByName: (branchId: string, name: string) => store.findRoomByName(branchId, name),
         findBranch: (id: string) => store.findBranchShort(id),
+        // Расписания в этом наборе нет — правило «аудиторию с занятиями
+        // не удалить» проверяет `group-schedule.e2e-spec.ts`.
+        countScheduleSlots: () => Promise.resolve(0),
         create: (input: RoomWriteInput) => store.createRoom(input),
         update: (id: string, input: Partial<RoomWriteInput>) => store.updateRoom(id, input),
         delete: (id: string) => store.deleteRoom(id),
@@ -656,6 +659,9 @@ describe('Справочники учебного контура (e2e, хран�
         findByName: (branchId: string, name: string) => store.findGroupByName(branchId, name),
         findBranch: (id: string) => store.findBranchShort(id),
         findCourse: (id: string) => store.findCourseShort(id),
+        // Тоже расписание: перенос группы в другой филиал упирается в занятия
+        // в аудиториях, и это проверяет `group-schedule.e2e-spec.ts`.
+        countScheduleSlotsWithRoom: () => Promise.resolve(0),
         create: (input: GroupWriteInput) => store.createGroup(input),
         update: (id: string, input: Partial<GroupWriteInput>) => store.updateGroup(id, input),
         delete: (id: string) => store.deleteGroup(id),

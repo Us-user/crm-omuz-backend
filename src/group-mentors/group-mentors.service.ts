@@ -101,13 +101,22 @@ export class GroupMentorsService {
     return toDto(mentor);
   }
 
+  /**
+   * Снятие ментора с группы. Заодно его имя убирается из занятий этой группы
+   * (одной транзакцией в репозитории): в расписании ведущим может стоять только
+   * ментор группы. Сами занятия остаются — у них просто пропадает ведущий,
+   * и число таких занятий возвращается в ответе.
+   */
   async remove(groupId: string, employeeId: string): Promise<GroupMentorRemovedDto> {
     const mentor = await this.requireMentor(groupId, employeeId);
 
-    await this.repository.delete(groupId, employeeId);
-    this.logger.log(`Ментор ${fullName(mentor.employee)} снят с группы ${groupId}`);
+    const clearedSlots = await this.repository.delete(groupId, employeeId);
+    this.logger.log(
+      `Ментор ${fullName(mentor.employee)} снят с группы ${groupId}` +
+        (clearedSlots > 0 ? `; занятий без ведущего: ${String(clearedSlots)}` : ''),
+    );
 
-    return { groupId, employeeId, fullName: fullName(mentor.employee) };
+    return { groupId, employeeId, fullName: fullName(mentor.employee), clearedSlots };
   }
 
   // ──────────────────────────────── Правила ─────────────────────────────────

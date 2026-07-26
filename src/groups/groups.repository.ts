@@ -132,6 +132,14 @@ export class GroupsRepository {
     return this.prisma.course.findUnique({ where: { id }, select: { id: true, title: true } });
   }
 
+  /**
+   * Сколько занятий группы стоит в аудиториях (ТЗ 5.5, расписание).
+   * Нужно переносу в другой филиал: аудитория обязана быть в филиале группы.
+   */
+  countScheduleSlotsWithRoom(groupId: string): Promise<number> {
+    return this.prisma.scheduleSlot.count({ where: { groupId, roomId: { not: null } } });
+  }
+
   create(input: GroupWriteInput): Promise<GroupRow> {
     return this.prisma.group.create({ data: input, select: GROUP_SELECT });
   }

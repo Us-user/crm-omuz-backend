@@ -24,10 +24,10 @@
 //   SyllabusLesson — урок программы курса («Day N», ТЗ 5.6);
 //   SyllabusLessonGroup — «Show to group»: каким группам урок показан;
 //   ResourceFile   — материал урока (ссылка на внешнее хранилище);
-//   GroupMentor    — ментор группы с ролью Teaching/Support (ТЗ 5.5).
+//   GroupMentor    — ментор группы с ролью Teaching/Support (ТЗ 5.5);
+//   ScheduleSlot   — слот расписания группы: день недели + время + аудитория (ТЗ 5.5, 5.10).
 //
-// Расписание и состав групп (ScheduleSlot, GroupStudent, Enrollment)
-// добавляются следующими кусками Фазы 3.
+// Состав групп (GroupStudent, Enrollment) добавляется следующим куском Фазы 3.
 
 generator client {
   provider = "prisma-client-js"
@@ -192,6 +192,10 @@ model Employee {
   /// Группы, где сотрудник ведёт занятия или помогает (ТЗ 5.5).
   /// Отсюда же строится раздел «Groups» в профиле ментора (ТЗ 5.4).
   mentorGroups GroupMentor[]
+
+  /// Занятия, которые сотрудник ведёт лично (ТЗ 5.10: ментор в расписании).
+  /// Отсюда же берутся часы для расчёта зарплаты (ТЗ 5.16).
+  mentorSlots ScheduleSlot[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -413,6 +417,10 @@ model Room {
   description String?
   status      DirectoryStatus @default(ACTIVE)
 
+  /// Занятия, поставленные в этой аудитории (ТЗ 5.10). `RESTRICT` со стороны
+  /// слота: аудиторию, занятую в расписании, удалить нельзя (см. `RoomsService`).
+  scheduleSlots ScheduleSlot[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -534,6 +542,9 @@ model Group {
 
   /// Менторы группы (ТЗ 5.5: «менторы (несколько, роли Teaching/Support)»).
   mentors GroupMentor[]
+
+  /// Расписание группы (ТЗ 5.5: «слоты день+время → Timetable»).
+  schedule ScheduleSlot[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -711,4 +722,71 @@ model GroupMentor {
   /// Обратный обход: группы конкретного ментора (раздел «Groups» профиля, ТЗ 5.4).
   @@index([employeeId])
   @@map("group_mentors")
+}
+
+// ───────────────────────── Расписание группы (ТЗ 5.5, 5.10) ─────────────────────
+
+/// День недели слота расписания.
+///
+/// Порядок объявления — это и порядок сортировки типа в PostgreSQL, поэтому
+/// неделя читается сверху вниз без отдельного поля порядка. Неделя начинается
+/// с понедельника: так её показывают календари в ru/tg-локалях.
+enum WeekDay {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+/// Слот расписания группы (ТЗ 5.5: «расписание (слоты день+время → Timetable)»).
+///
+/// Слот **повторяется еженедельно** в пределах сроков группы (решение сессии 0011):
+/// «Понедельник 10:00–12:00 в аудитории 101» — одна строка на весь курс, а не
+/// по строке на каждое занятие. Календарь Day/Week/Month (ТЗ 5.10) разворачивает
+/// слоты в конкретные даты на лету.
+///
+/// Тип занятия (Lecture/Practice/Exam) слоту не принадлежит намеренно: при
+/// еженедельном повторении каждый понедельник — это другой день программы,
+/// и тип берётся из силлабуса (`SyllabusLesson.type`), а не из слота.
+model ScheduleSlot {
+  id String @id @default(uuid()) @db.Uuid
+
+  groupId String @db.Uuid
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  dayOfWeek WeekDay
+
+  /// Начало и конец занятия — минуты от полуночи (0…1439), а не `time`.
+  /// Целое число сравнимо и сортируемо без разбора часовых поясов, а Prisma
+  /// отдаёт `@db.Time` как `DateTime` с фиктивной датой — на нём проверка
+  /// пересечений читалась бы хуже, чем на числах. Наружу уходит `HH:MM`.
+  startMinute Int
+  endMinute   Int
+
+  /// Аудитория занятия (ТЗ 5.10). Необязательна: у онлайн-группы её нет.
+  /// `RESTRICT`: аудитория — самостоятельная запись справочника, и её удаление
+  /// не должно молча стирать занятия из расписания (как филиал и курс).
+  roomId String? @db.Uuid
+  room   Room?   @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  /// Кто ведёт это занятие (ТЗ 5.10 показывает ментора в календаре).
+  /// Только из числа менторов группы — проверяется сервисом; в БД связь идёт
+  /// на сотрудника, а не на `GroupMentor`, потому что `SET NULL` по составному
+  /// ключу обнулил бы заодно и `groupId`. При снятии ментора с группы поле
+  /// очищается той же транзакцией (`GroupMentorsRepository.delete`).
+  mentorId String?   @db.Uuid
+  mentor   Employee? @relation(fields: [mentorId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Расписание группы читается целиком и в порядке «день недели, время».
+  @@index([groupId, dayOfWeek, startMinute])
+  /// Поиск пересечений: занята ли аудитория и не ведёт ли ментор другое занятие.
+  @@index([roomId, dayOfWeek])
+  @@index([mentorId, dayOfWeek])
+  @@map("schedule_slots")
 }

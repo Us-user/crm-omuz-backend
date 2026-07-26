@@ -58,4 +58,12 @@ export class GroupMentorRemovedDto {
 
   @ApiProperty({ example: 'Раҳимов Фаррух' })
   fullName!: string;
+
+  @ApiProperty({
+    example: 0,
+    description:
+      'Сколько занятий группы осталось без ведущего: снятый ментор убирается ' +
+      'из слотов расписания той же транзакцией (ТЗ 5.5).',
+  })
+  clearedSlots!: number;
 }
