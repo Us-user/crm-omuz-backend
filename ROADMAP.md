@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 1 из 14 · ~13% (Фаза 0 — 9/13 пунктов, Фаза 1 — 7/9 пунктов)
+**Общий прогресс:** Фаза 1 из 14 · ~14% (Фаза 0 — 11/13 пунктов, Фаза 1 — 7/9 пунктов)
 
 ---
 
@@ -21,8 +21,8 @@
 
 - [x] Инициализация NestJS + TypeScript (strict), структура модульного монолита
 - [x] Config-модуль: чтение и валидация `.env` (schema), `.env.example`
-- [~] Подключение Prisma + PostgreSQL, первая миграция (пустая/health) — код и миграция готовы, **не применены** (нет доступа к локальной БД)
-- [~] Redis + BullMQ: подключение, базовая очередь — код готов, **не проверен вживую** (Redis не запущен)
+- [x] Подключение Prisma + PostgreSQL, первая миграция (пустая/health) — миграции применены в CI к реальному PostgreSQL, e2e подтверждает `database: up`
+- [~] Redis + BullMQ: подключение, базовая очередь — приложение поднимается с реальным Redis в CI; **обработка задач очереди не прогонялась** (появится с Фазой 11)
 - [~] Docker + `docker-compose` (app, postgres, redis) — файлы готовы, **не проверены** (Docker не установлен)
 - [x] Логирование Pino (структурированное, request-id)
 - [x] Глобальный формат ответа `{ data, meta }` и ошибок `{ error: { code, message, details } }`
@@ -31,12 +31,12 @@
 - [x] Swagger/OpenAPI на префиксе `/api/v1`
 - [x] Health-check эндпоинт `GET /health`
 - [x] Настройка Jest + supertest (unit + e2e каркас)
-- [~] CI-заготовка (lint + test) — workflow написан, **не прогонялся** (первый запуск будет на GitHub)
+- [x] CI-заготовка (lint + test) — прогоняется на каждый push, зелёный: lint → typecheck → unit → `migrate deploy` → e2e
 
 ## Фаза 1 — Идентичность и аутентификация (Auth) · ТЗ 3.1, 5.1
 Цель: аккаунты, вход, сессии, сброс пароля.
 
-- [x] Prisma-модели: `Account`, `Student`, `Employee`, `Session` — схема и миграция готовы, **миграция не применена** (нет пароля к локальной БД; первое применение — в CI)
+- [x] Prisma-модели: `Account`, `Student`, `Employee`, `Session` — миграция применена в CI к реальному PostgreSQL
 - [x] Хеш пароля argon2id; нормализация телефона в E.164
 - [x] Регистрация (`POST /auth/register`): имя, фамилия, ДР, адрес, email, телефон(уник, логин), тел. родителя, пароль ≥8
 - [x] Вход `POST /auth/login` (телефон + пароль)
