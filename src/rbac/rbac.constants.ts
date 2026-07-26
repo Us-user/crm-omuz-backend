@@ -1,3 +1,5 @@
+import type { PermissionSection } from './permission-catalog';
+
 /** Ключ метаданных декоратора `@RequirePermission()`. */
 export const PERMISSIONS_KEY = 'rbac:permissions';
 
@@ -20,3 +22,18 @@ export const DEFAULT_POSITIONS: readonly { name: string; description: string }[]
   { name: 'Mentor', description: 'Ментор: свои группы, журнал, материалы' },
   { name: 'Developer', description: 'Разработчик' },
 ];
+
+/**
+ * Разделы каталога, права которых выдаются **только** системной позиции `Director`
+ * (ТЗ 3.2: «раздел Accounting виден только позиции Director», ТЗ 5.16).
+ *
+ * Правило живёт здесь, а не в коде каждого эндпоинта: раздел закрывается целиком,
+ * и проверять его при выдаче галочек надёжнее, чем при каждом запросе — иначе
+ * право лежало бы у позиции, но не работало, и разбираться в этом пришлось бы
+ * по исходникам. Список менять можно: если появится позиция «Accountant»,
+ * достаточно убрать раздел отсюда.
+ */
+export const DIRECTOR_ONLY_SECTIONS: readonly PermissionSection[] = ['Accounting'];
+
+/** Верхняя граница на число позиций в одном запросе назначения ролей. */
+export const MAX_ROLES_PER_REQUEST = 20;

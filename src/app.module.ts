@@ -10,6 +10,7 @@ import { MailerModule } from './mailer/mailer.module';
 import { PhoneModule } from './phone/phone.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
+import { RbacAdminModule } from './rbac/rbac-admin.module';
 import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
 import { StudentsModule } from './students/students.module';
@@ -25,6 +26,7 @@ import { StudentsModule } from './students/students.module';
     PhoneModule,
     AuthModule,
     RbacModule,
+    RbacAdminModule,
     StudentsModule,
     HealthModule,
   ],

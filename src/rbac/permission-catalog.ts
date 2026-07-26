@@ -301,6 +301,24 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = Object.entrie
 /** Множество всех кодов — для проверки строк, пришедших извне. */
 const CODES = new Set<string>(PERMISSION_CATALOG.map((permission) => permission.code));
 
+const BY_CODE = new Map<string, PermissionDefinition>(
+  PERMISSION_CATALOG.map((permission) => [permission.code, permission]),
+);
+
+/**
+ * Раздел, к которому относится код. Нужен правилам вида «раздел Accounting
+ * выдаётся только позиции Director» (ТЗ 3.2), где решение принимается по разделу,
+ * а не по отдельному действию.
+ */
+export const permissionSectionOf = (code: PermissionCode): PermissionSection => {
+  const definition = BY_CODE.get(code);
+  // Тип `PermissionCode` выводится из каталога, поэтому запись здесь всегда есть.
+  // Проверка оставлена, чтобы функция не возвращала `undefined` при вызове из JS.
+  if (!definition) throw new Error(`Код права вне каталога: ${code}`);
+
+  return definition.section;
+};
+
 /** Человекочитаемые названия разделов (для экрана каталога прав, ТЗ 5.15). */
 export const PERMISSION_SECTION_TITLES: Readonly<Record<PermissionSection, string>> =
   Object.fromEntries(

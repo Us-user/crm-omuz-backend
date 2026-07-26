@@ -186,6 +186,40 @@ promoteToEmployee() {}
 Стартовый справочник позиций (`Director`, `Admin`, `Manager`, `Mentor`, `Developer`)
 заводится миграцией один раз; дальше им управляет администратор.
 
+### Управление правами
+
+| Эндпоинт | Назначение | Требуемое право |
+|---|---|---|
+| `GET /api/v1/positions` | Справочник позиций (пагинация, поиск) | `Permission.Positions.Views` |
+| `GET /api/v1/positions/{id}` | Карточка позиции с кодами её прав | `Permission.Positions.Views` |
+| `POST /api/v1/positions` | Создание позиции с галочками прав | `Permission.Positions.Create` |
+| `PUT /api/v1/positions/{id}` | Правка позиции; `permissions` заменяет набор целиком | `Permission.Positions.Update` |
+| `DELETE /api/v1/positions/{id}` | Удаление позиции | `Permission.Positions.Delete` |
+| `GET /api/v1/admin/users` | Все аккаунты: Type / Roles / Phone (ТЗ 5.15) | `Permission.Administration.ViewUsers` |
+| `POST /api/v1/admin/users/{id}/roles` | Назначить позиции аккаунту сотрудника | `Permission.Administration.ManageUserRoles` |
+| `DELETE /api/v1/admin/users/{id}/roles` | Снять позиции (список — в теле запроса) | `Permission.Administration.ManageUserRoles` |
+| `GET /api/v1/admin/permissions` | Каталог прав по разделам с переключателями | `Permission.Administration.ViewPermissions` |
+| `PUT /api/v1/admin/permissions` | Переключить права каталога | `Permission.Administration.ManagePermissions` |
+
+Правила, которые стоит знать заранее:
+
+- **раздел Accounting доступен только позиции `Director`** (ТЗ 3.2, 5.16): выдать
+  `Permission.Accounting.*` любой другой позиции нельзя — 422. Список закрытых разделов —
+  `DIRECTOR_ONLY_SECTIONS` в `src/rbac/rbac.constants.ts`;
+- **системная позиция `Director` неизменяема**: правка, переименование и удаление — 422;
+- **позицию, которую занимают сотрудники, удалить нельзя** (409): каскад молча забрал бы
+  у них часть прав, и восстановить, какие именно, было бы нечем;
+- название позиции уникально **без учёта регистра** — иначе `director` рядом с `Director`
+  читался бы как та же позиция, а правило доступа сработало бы только для одной из них;
+- **последнего `Director` разжаловать нельзя** (422): назначение ролей само требует права,
+  и вернуть доступ было бы некому;
+- роли назначаются только аккаунтам **сотрудников** (студенту — 422) и начинают действовать
+  **сразу**, без повторного входа: права читаются из БД на каждый запрос;
+- **служебные права** (`Permission.Administration.ViewPermissions` и `...ManagePermissions`)
+  выключить нельзя — иначе управление каталогом не вернуть через API;
+- `GET /admin/permissions` **не постраничный**: это экран настроек, где раздел нужен целиком
+  (`?section=Students` оставляет один раздел).
+
 ## Переменные окружения
 
 Все переменные валидируются при старте (`src/config/env.validation.ts`); при некорректном
@@ -217,11 +251,13 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 
 - **Юнит** (`npm test`) — рядом с кодом, `*.spec.ts`, внешняя инфраструктура не нужна.
 - **E2E** (`npm run test:e2e`) — в `test/`:
-  - `api-conventions.e2e-spec.ts`, `health-route.e2e-spec.ts`, `auth.e2e-spec.ts` и
-    `students.e2e-spec.ts` работают **без** PostgreSQL и Redis: поднимается настоящее
-    Nest-приложение с реальными глобальными pipe/filter/interceptor, а зависимости подменены
-    заглушками (репозитории — в памяти, так что сценарии «регистрация → вход → ротация → выход»
-    и перевод студента в сотрудники проверяются на любой машине);
+  - `api-conventions.e2e-spec.ts`, `health-route.e2e-spec.ts`, `auth.e2e-spec.ts`,
+    `students.e2e-spec.ts` и `rbac.e2e-spec.ts` работают **без** PostgreSQL и Redis:
+    поднимается настоящее Nest-приложение с реальными глобальными pipe/filter/interceptor,
+    а зависимости подменены заглушками (репозитории — в памяти, так что сценарии
+    «регистрация → вход → ротация → выход», перевод студента в сотрудники и управление
+    правами — включая «выдали роль → доступ появился» и «выключили право в каталоге →
+    доступ пропал» — проверяются на любой машине);
   - `health.e2e-spec.ts` требует поднятых PostgreSQL и Redis (запускается в CI
     и через `docker compose`).
 
@@ -238,7 +274,8 @@ src/
   phone/       нормализация телефонов в E.164
   prisma/      подключение к PostgreSQL
   queue/       BullMQ: очереди фоновых задач
-  rbac/        каталог прав, позиции, @RequirePermission и guard (ТЗ 3.2)
+  rbac/        каталог прав, @RequirePermission и guard (ТЗ 3.2); справочник позиций
+               и экраны Administration → Users / Permission (ТЗ 5.14, 5.15)
   redis/       общий клиент Redis (кэш, rate-limit)
   students/    студенты (ТЗ 5.3); пока только перевод Студент → Сотрудник
 prisma/        схема и миграции

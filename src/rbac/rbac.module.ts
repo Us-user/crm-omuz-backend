@@ -12,11 +12,12 @@ import { RbacRepository } from './rbac.repository';
  * любого доменного модуля, и требовать от каждого из них импортировать RBAC —
  * лишний шаг, который однажды забудут (guard тогда не соберётся в рантайме).
  *
- * CRUD позиций и экраны Administration подключаются следующим куском Фазы 2.
+ * Здесь только сквозное ядро. Управление правами по HTTP (`/positions`,
+ * `/admin/users`, `/admin/permissions`) живёт в `RbacAdminModule`.
  */
 @Global()
 @Module({
   providers: [RbacRepository, PermissionsService, PermissionsGuard, PermissionCatalogSyncService],
-  exports: [PermissionsService, PermissionsGuard],
+  exports: [RbacRepository, PermissionsService, PermissionsGuard],
 })
 export class RbacModule {}

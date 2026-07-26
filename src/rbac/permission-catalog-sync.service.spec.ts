@@ -13,6 +13,7 @@ const storedFrom = (index: number, overrides: Partial<StoredPermission> = {}): S
     section: definition.section,
     action: definition.action,
     description: definition.description,
+    isEnabled: true,
     isSystem: definition.isSystem,
     ...overrides,
   };
@@ -87,6 +88,7 @@ describe('PermissionCatalogSyncService', () => {
         section: 'Legacy',
         action: 'Whatever',
         description: null,
+        isEnabled: true,
         isSystem: false,
       },
     ]);

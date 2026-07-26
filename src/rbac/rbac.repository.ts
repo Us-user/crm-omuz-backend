@@ -3,13 +3,18 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { PermissionDefinition } from './permission-catalog';
 
-/** Строка каталога прав в том объёме, в каком её сверяет синхронизация. */
+/**
+ * Строка каталога прав: этого объёма хватает и синхронизации при старте,
+ * и экрану `Administration → Permission` (ТЗ 5.15) — второй выборки не нужно.
+ */
 export interface StoredPermission {
   id: string;
   code: string;
   section: string;
   action: string;
   description: string | null;
+  /** Состояние переключателя. Синхронизация его не трогает — им управляет администратор. */
+  isEnabled: boolean;
   isSystem: boolean;
 }
 
@@ -39,7 +44,7 @@ export class RbacRepository {
     });
   }
 
-  /** Весь каталог из БД — для сверки с каталогом в коде при старте. */
+  /** Весь каталог из БД — для сверки с каталогом в коде при старте и для экрана прав. */
   findAllPermissions(): Promise<StoredPermission[]> {
     return this.prisma.permission.findMany({
       select: {
@@ -48,6 +53,7 @@ export class RbacRepository {
         section: true,
         action: true,
         description: true,
+        isEnabled: true,
         isSystem: true,
       },
     });
@@ -80,6 +86,35 @@ export class RbacRepository {
         isSystem: definition.isSystem,
       },
     });
+  }
+
+  /**
+   * Переключатель каталога прав (ТЗ 5.15). Две пачки вместо строки-за-строкой:
+   * экран отправляет весь раздел целиком, и 99 запросов там были бы напрасны.
+   *
+   * Одной транзакцией: половина применённого переключения — это набор прав,
+   * которого администратор не выбирал.
+   *
+   * @returns сколько строк изменено.
+   */
+  async setPermissionsEnabled(
+    enableIds: readonly string[],
+    disableIds: readonly string[],
+  ): Promise<number> {
+    if (enableIds.length === 0 && disableIds.length === 0) return 0;
+
+    const [enabled, disabled] = await this.prisma.$transaction([
+      this.prisma.permission.updateMany({
+        where: { id: { in: [...enableIds] } },
+        data: { isEnabled: true },
+      }),
+      this.prisma.permission.updateMany({
+        where: { id: { in: [...disableIds] } },
+        data: { isEnabled: false },
+      }),
+    ]);
+
+    return enabled.count + disabled.count;
   }
 
   /**

@@ -4,7 +4,9 @@ import {
   PERMISSION_SECTION_TITLES,
   isPermissionCode,
   permissionCode,
+  permissionSectionOf,
 } from './permission-catalog';
+import { DIRECTOR_ONLY_SECTIONS } from './rbac.constants';
 
 describe('Каталог прав', () => {
   it('не пустой и покрывает разделы ТЗ 5', () => {
@@ -69,5 +71,34 @@ describe('Каталог прав', () => {
 
   it('склеивает код из частей', () => {
     expect(permissionCode('Students', 'Views')).toBe('Permission.Students.Views');
+  });
+
+  it('возвращает раздел кода', () => {
+    expect(permissionSectionOf('Permission.Accounting.ManageSalary')).toBe('Accounting');
+  });
+
+  describe('Правило «Accounting только Director» (ТЗ 3.2, 5.16)', () => {
+    it('раздел Accounting закрыт для обычных позиций', () => {
+      expect(DIRECTOR_ONLY_SECTIONS).toContain('Accounting');
+    });
+
+    it('все права бухгалтерии из ТЗ 5.16 попадают под правило', () => {
+      const accounting = PERMISSION_CATALOG.filter(
+        (permission) => permission.section === 'Accounting',
+      );
+
+      // Правило описано разделом, а не перечислением кодов: любое право,
+      // добавленное в Accounting в Фазе 9, автоматически окажется под запретом.
+      expect(accounting.length).toBeGreaterThan(1);
+      for (const { code } of accounting) {
+        expect(DIRECTOR_ONLY_SECTIONS).toContain(permissionSectionOf(code));
+      }
+    });
+
+    it('остальные разделы правилом не затронуты', () => {
+      for (const section of ['Students', 'Groups', 'Administration'] as const) {
+        expect(DIRECTOR_ONLY_SECTIONS).not.toContain(section);
+      }
+    });
   });
 });
