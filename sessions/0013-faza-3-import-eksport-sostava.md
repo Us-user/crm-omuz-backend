@@ -180,6 +180,17 @@
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30226083971`, коммит `ce666b6`, зелёный):
+- `npm test` — 477 тестов; `npm run test:e2e` целиком — **11 наборов, 307 тестов**,
+  включая `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer +
+  Auth + Rbac + Students + Branches + Rooms + Courses + Groups + GroupMentors +
+  GroupSchedule + GroupStudents + Syllabus) против настоящих PostgreSQL и Redis:
+  приложение с изменённым `TransformResponseInterceptor` (в него добавлен `Reflector`)
+  поднимается и подтверждает `database: up` — то есть DI глобального интерцептора
+  не сломался;
+- `npx prisma migrate deploy` — все **одиннадцать** прежних миграций применены
+  к реальному PostgreSQL 16 (новых в этой сессии не было).
+
 **НЕ проверено (честно):**
 - **`findAllForExport` и `findStudentsByPhones` на настоящей БД не выполнялись.**
   В e2e репозиторий подменён хранилищем в памяти, а миграции в этой сессии нет, так что
@@ -233,5 +244,8 @@ Student CRUD с формой и статусами: на него завязан
 
 ## Коммит
 
-- `<хеш>` — «Фаза 3: импорт и экспорт состава группы (CSV)».
+- `ce666b6` — «Фаза 3: импорт и экспорт состава группы (CSV)»
+  (19 файлов, +1891 −39).
+- На `ce666b6` прогнан зелёный CI (run `30226083971`).
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
