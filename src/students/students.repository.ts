@@ -17,6 +17,7 @@ const STUDENT_PROMOTION_SELECT = {
   phone: true,
   telegram: true,
   photoUrl: true,
+  branchId: true,
   promotedEmployee: { select: { id: true } },
   account: { select: { id: true, phone: true, email: true, type: true, status: true } },
 } satisfies Prisma.StudentSelect;
@@ -62,6 +63,8 @@ export interface PromotedEmployeeInput {
   phone: string;
   telegram: string | null;
   photoUrl: string | null;
+  /** Филиал переезжает вместе с человеком (ТЗ 3.3): место работы у него то же. */
+  branchId: string | null;
   experience?: string;
   description?: string;
   hiredAt: Date;

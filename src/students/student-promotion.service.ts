@@ -70,6 +70,7 @@ export class StudentPromotionService {
         phone,
         telegram: student.telegram,
         photoUrl: student.photoUrl,
+        branchId: student.branchId,
         experience: dto.experience,
         description: dto.description,
         hiredAt: hireDate(dto.hiredAt),

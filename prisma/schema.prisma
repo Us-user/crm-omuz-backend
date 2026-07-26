@@ -16,8 +16,13 @@
 //   PositionPermission — «галочки» прав позиции;
 //   EmployeePosition   — позиции сотрудника (мультивыбор), права = union прав позиций.
 //
-// Доменные модули (Branch, Course, Group, …) добавляются в Фазе 3; поля-связи
-// к ним появятся в профилях тогда же.
+// Фаза 3 — учебный контур, справочники (ТЗ 5.6, 5.10, 5.17):
+//   Branch — филиал; к нему привязаны аудитории, студенты и сотрудники (ТЗ 3.3);
+//   Room   — аудитория филиала, источник поля «аудитория» в расписании;
+//   Course — курс каталога: стоимость, длительность, флаг последнего курса.
+//
+// Группы, силлабус и расписание (Group, SyllabusLesson, ScheduleSlot, …)
+// добавляются следующим куском Фазы 3.
 
 generator client {
   provider = "prisma-client-js"
@@ -118,6 +123,11 @@ model Student {
   photoUrl String?
   notes    String?
 
+  /// Филиал, в котором учится студент (ТЗ 3.3, форма из ТЗ 5.3). Необязателен:
+  /// профиль заводится раньше, чем становится известен филиал.
+  branchId String? @db.Uuid
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
   status StudentStatus @default(ACTIVE)
 
   /// Сотрудник, которым стал этот студент (ТЗ 3.1: выпускник → ментор).
@@ -130,6 +140,7 @@ model Student {
 
   @@index([status])
   @@index([lastName, firstName])
+  @@index([branchId])
   @@map("students")
 }
 
@@ -156,6 +167,10 @@ model Employee {
   /// Опыт работы — свободный текст формы «Experience» (ТЗ 5.14).
   experience  String?
 
+  /// Филиал сотрудника (ТЗ 3.3, форма из ТЗ 5.14).
+  branchId String? @db.Uuid
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
   status  EmployeeStatus @default(ACTIVE)
   hiredAt DateTime?      @db.Date
 
@@ -174,6 +189,7 @@ model Employee {
 
   @@index([status])
   @@index([lastName, firstName])
+  @@index([branchId])
   @@map("employees")
 }
 
@@ -316,4 +332,122 @@ model EmployeePosition {
   /// Обратный обход: кто занимает позицию (список сотрудников позиции).
   @@index([positionId])
   @@map("employee_positions")
+}
+
+// ─────────────────────── Учебный контур: справочники (Фаза 3) ────────────────────
+
+/// Состояние записи справочника. Выключенную запись не предлагают в новых
+/// операциях, но она остаётся в истории — поэтому именно статус, а не удаление
+/// (ТЗ 5.17: «статус» на карточке филиала).
+///
+/// Один enum на филиалы, аудитории и курсы: смысл у всех трёх один и тот же,
+/// а три одинаковых перечисления пришлось бы держать в согласии руками.
+enum DirectoryStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Единица длительности курса (ТЗ 5.6 «Duration»; ТЗ 5.5 — «длительность: число + тип»).
+/// Тот же тип понадобится группам, поэтому он общий, а не встроен в курс.
+enum DurationUnit {
+  DAY
+  WEEK
+  MONTH
+}
+
+/// Филиал центра (ТЗ 5.17). Мультифилиальность сквозная (ТЗ 3.3): к филиалу
+/// привязаны аудитории, студенты и сотрудники, а позже — группы.
+model Branch {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Название филиала (Sadbarg, Profsous…). Уникально: по нему филиал узнают на экранах.
+  name String @unique
+
+  city     String
+  /// Район города — отдельным полем, потому что карточка филиала показывает его
+  /// рядом с городом (ТЗ 5.17), а не внутри строки адреса.
+  district String?
+  address  String
+
+  /// Телефон филиала в E.164. Не уникален: несколько филиалов могут делить один номер.
+  phone String?
+
+  description String?
+  status      DirectoryStatus @default(ACTIVE)
+
+  rooms     Room[]
+  students  Student[]
+  employees Employee[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("branches")
+}
+
+/// Аудитория (ТЗ 5.10): источник поля «Room» в расписании занятий.
+/// Комната физически принадлежит филиалу, поэтому связь обязательна.
+model Room {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId String @db.Uuid
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  name String
+
+  /// Сколько человек помещается. Понадобится при проверке вместимости группы.
+  capacity Int?
+  floor    Int?
+
+  description String?
+  status      DirectoryStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Название уникально внутри филиала, а не глобально: аудитория «101»
+  /// вполне может быть в каждом филиале.
+  @@unique([branchId, name])
+  @@index([branchId])
+  @@index([status])
+  @@map("rooms")
+}
+
+/// Курс каталога (ТЗ 5.6). Курсы длятся около месяца, поэтому `fee` —
+/// одновременно и помесячное начисление в бухгалтерии (ТЗ 5.16).
+model Course {
+  id String @id @default(uuid()) @db.Uuid
+
+  title       String  @unique
+  subtitle    String?
+  description String?
+
+  /// Стоимость курса в сомони (ТЗ 1: валюта TJS). `Decimal`, а не `Float`:
+  /// деньги в двоичной плавающей точке накапливают ошибку на сложении.
+  fee Decimal @db.Decimal(12, 2)
+
+  /// «Is last course» из ТЗ 5.6: завершение группы такого курса запускает
+  /// автовыпуск студентов (ТЗ 5.11).
+  isLastCourse Boolean @default(false)
+
+  /// Цвета карточки курса на экранах (Color1/Color2 из ТЗ 5.6), формат `#RRGGBB`.
+  colorPrimary   String?
+  colorSecondary String?
+  logoUrl        String?
+
+  /// Длительность = число + единица (ТЗ 5.6). Хранится парой, а не строкой,
+  /// чтобы по ней можно было считать даты окончания групп.
+  durationValue Int
+  durationUnit  DurationUnit @default(MONTH)
+
+  status DirectoryStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  /// Автовыпуск ищет курсы с флагом последнего — выборка по одному значению.
+  @@index([isLastCourse])
+  @@map("courses")
 }

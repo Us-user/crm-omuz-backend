@@ -30,6 +30,7 @@ const student = (overrides: Partial<StudentForPromotion> = {}): StudentForPromot
   phone: PHONE,
   telegram: '@farrukh',
   photoUrl: null,
+  branchId: null,
   promotedEmployee: null,
   account: {
     id: ACCOUNT_ID,
@@ -109,6 +110,21 @@ describe('StudentPromotionService', () => {
 
     // Учебная история остаётся на студенте — сотрудник хранит ссылку на неё (ТЗ 3.1).
     expect(response.employee.formerStudentId).toBe(STUDENT_ID);
+  });
+
+  it('переносит филиал: место работы у человека то же, где он учился (ТЗ 3.3)', async () => {
+    const branchId = '44444444-4444-4444-4444-444444444444';
+    repository.findForPromotion.mockResolvedValue(student({ branchId }));
+
+    await service.promoteToEmployee(STUDENT_ID, {});
+
+    expect(promotionCall().employee.branchId).toBe(branchId);
+  });
+
+  it('студент без филиала становится сотрудником без филиала, а не падает', async () => {
+    await service.promoteToEmployee(STUDENT_ID, {});
+
+    expect(promotionCall().employee.branchId).toBeNull();
   });
 
   it('не меняет логин: телефон и email аккаунта остаются прежними (ТЗ 3.1)', async () => {

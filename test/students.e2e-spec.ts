@@ -150,6 +150,7 @@ const student = (overrides: Partial<StudentForPromotion> = {}): StudentForPromot
   phone: STUDENT_PHONE,
   telegram: '@farrukh',
   photoUrl: null,
+  branchId: null,
   promotedEmployee: null,
   account: {
     id: ACCOUNT_ID,
