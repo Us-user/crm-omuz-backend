@@ -1,8 +1,12 @@
 // Схема БД CRM «Omuz».
 //
-// Фаза 0 — только подключение и первая (пустая) миграция: она создаёт служебную
-// таблицу `_prisma_migrations`, чтобы дальнейшие миграции ложились в общую историю.
-// Доменные модели добавляются начиная с Фазы 1 (Account, Student, Employee, Session).
+// Фаза 1 — идентичность и аутентификация (ТЗ 3.1):
+//   Account  — логин (телефон в E.164) + argon2id-хеш пароля;
+//   Student / Employee — профили, взаимоисключающие, каждый опционально связан с Account;
+//   Session  — серверные refresh-сессии (одна строка = одно устройство).
+//
+// Доменные модули (Branch, Position, Group, …) добавляются в Фазах 2–3; поля-связи
+// к ним появятся в профилях тогда же.
 
 generator client {
   provider = "prisma-client-js"
@@ -11,4 +15,161 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Идентичность и доступ ───────────────────────────
+
+/// Тип профиля, привязанного к аккаунту (ТЗ 3.1: Student ИЛИ Employee, не одновременно).
+enum AccountType {
+  STUDENT
+  EMPLOYEE
+}
+
+enum AccountStatus {
+  ACTIVE
+  /// Вход запрещён; обратимо, не удаление (ТЗ 5.3).
+  BLOCKED
+}
+
+/// Язык интерфейса и уведомлений (ТЗ 3.3).
+enum Locale {
+  RU
+  EN
+  TG
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+/// ТЗ 5.3: Active (учится) · No Active (пауза/покинул) · Finished (прошёл курс) · Block.
+enum StudentStatus {
+  ACTIVE
+  NO_ACTIVE
+  FINISHED
+  BLOCK
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Идентичность: логин и пароль. Личные данные живут в профиле, потому что
+/// профиль может существовать без аккаунта (ТЗ 5.3: «аккаунт опционален, Invite»).
+model Account {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Логин. Номер телефона в формате E.164 (ТЗ 3.1).
+  phone        String        @unique
+  /// Нужен для сброса пароля по email (ТЗ 3.1), поэтому уникален.
+  email        String        @unique
+  passwordHash String
+  type         AccountType
+  status       AccountStatus @default(ACTIVE)
+  locale       Locale        @default(RU)
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  student  Student?
+  employee Employee?
+  sessions Session[]
+
+  @@index([status])
+  @@map("accounts")
+}
+
+/// Профиль студента (ТЗ 5.3). Часть полей формы (филиал, группы) появится с Фазами 3–4.
+model Student {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String?  @unique @db.Uuid
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  firstName String
+  lastName  String
+  birthDate DateTime? @db.Date
+  gender    Gender?
+  address   String?
+  email     String?
+
+  /// Контактный телефон в E.164. При регистрации совпадает с `Account.phone`.
+  phone       String   @unique
+  /// Телефон родителя/опекуна (ТЗ 3.1, поле регистрации).
+  parentPhone String?
+  /// Дополнительные телефоны (ТЗ 5.3).
+  extraPhones String[] @default([])
+
+  telegram String?
+  photoUrl String?
+  notes    String?
+
+  status StudentStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([lastName, firstName])
+  @@map("students")
+}
+
+/// Профиль сотрудника (ТЗ 5.14). Позиции и права подключаются в Фазе 2.
+model Employee {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String?  @unique @db.Uuid
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  firstName  String
+  lastName   String
+  middleName String?
+  birthDate  DateTime? @db.Date
+  gender     Gender?
+  address    String?
+  email      String?
+
+  /// Контактный телефон в E.164.
+  phone String @unique
+
+  telegram    String?
+  photoUrl    String?
+  description String?
+  /// Опыт работы — свободный текст формы «Experience» (ТЗ 5.14).
+  experience  String?
+
+  status  EmployeeStatus @default(ACTIVE)
+  hiredAt DateTime?      @db.Date
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([lastName, firstName])
+  @@map("employees")
+}
+
+/// Серверная refresh-сессия (ТЗ 3.1): одна строка — одно устройство.
+/// При ротации строка переиспользуется: в неё кладётся хеш нового refresh-токена,
+/// поэтому старый токен автоматически перестаёт подходить.
+model Session {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @db.Uuid
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 (hex) от выданного refresh-токена. Сам токен не хранится.
+  refreshTokenHash String
+
+  userAgent String?
+  ip        String?
+
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+
+  @@index([accountId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
 }

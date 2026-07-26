@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 0 из 14 · ~6% (Фаза 0 закрыта на 9/13 пунктов)
+**Общий прогресс:** Фаза 1 из 14 · ~13% (Фаза 0 — 9/13 пунктов, Фаза 1 — 7/9 пунктов)
 
 ---
 
@@ -36,13 +36,13 @@
 ## Фаза 1 — Идентичность и аутентификация (Auth) · ТЗ 3.1, 5.1
 Цель: аккаунты, вход, сессии, сброс пароля.
 
-- [ ] Prisma-модели: `Account`, `Student`, `Employee`, `Session`
-- [ ] Хеш пароля argon2id; нормализация телефона в E.164
-- [ ] Регистрация (`POST /auth/register`): имя, фамилия, ДР, адрес, email, телефон(уник, логин), тел. родителя, пароль ≥8
-- [ ] Вход `POST /auth/login` (телефон + пароль)
-- [ ] JWT: access 1ч / refresh 2 недели (Passport стратегии)
-- [ ] Ротация refresh (старый инвалидируется), серверные сессии
-- [ ] `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/logout-all`
+- [x] Prisma-модели: `Account`, `Student`, `Employee`, `Session` — схема и миграция готовы, **миграция не применена** (нет пароля к локальной БД; первое применение — в CI)
+- [x] Хеш пароля argon2id; нормализация телефона в E.164
+- [x] Регистрация (`POST /auth/register`): имя, фамилия, ДР, адрес, email, телефон(уник, логин), тел. родителя, пароль ≥8
+- [x] Вход `POST /auth/login` (телефон + пароль)
+- [x] JWT: access 1ч / refresh 2 недели (Passport стратегии)
+- [x] Ротация refresh (старый инвалидируется), серверные сессии
+- [x] `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/logout-all`
 - [ ] Сброс пароля по email: `POST /auth/password/forgot`, `POST /auth/password/reset` (6-значный код, ~10 мин)
 - [ ] Основа перевода Студент → Сотрудник (сохранение логина и истории)
 

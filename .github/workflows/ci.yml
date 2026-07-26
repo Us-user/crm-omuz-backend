@@ -42,6 +42,9 @@ jobs:
       REDIS_PORT: 6379
       LOG_LEVEL: error
       SWAGGER_ENABLED: false
+      # Тестовые значения: боевые секреты живут только в секретах окружения.
+      JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
+      JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
 
     steps:
       - uses: actions/checkout@v4

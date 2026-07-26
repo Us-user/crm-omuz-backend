@@ -2,6 +2,8 @@ import { LogLevel, NodeEnv, validateEnv } from './env.validation';
 
 const MINIMAL = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/db?schema=public',
+  JWT_ACCESS_SECRET: 'access-secret-at-least-32-characters-long',
+  JWT_REFRESH_SECRET: 'refresh-secret-at-least-32-characters-long',
 };
 
 describe('validateEnv', () => {
@@ -14,10 +16,28 @@ describe('validateEnv', () => {
     expect(env.REDIS_PORT).toBe(6379);
     expect(env.LOG_LEVEL).toBe(LogLevel.Info);
     expect(env.SWAGGER_ENABLED).toBe(true);
+    expect(env.JWT_ACCESS_TTL_SECONDS).toBe(3600);
+    expect(env.JWT_REFRESH_TTL_SECONDS).toBe(1_209_600);
+    expect(env.DEFAULT_PHONE_REGION).toBe('TJ');
   });
 
   it('падает, если DATABASE_URL не задан', () => {
     expect(() => validateEnv({})).toThrow(/DATABASE_URL/);
+  });
+
+  it('требует секреты JWT и отвергает слишком короткие', () => {
+    expect(() => validateEnv({ ...MINIMAL, JWT_ACCESS_SECRET: undefined })).toThrow(
+      /JWT_ACCESS_SECRET/,
+    );
+    expect(() => validateEnv({ ...MINIMAL, JWT_REFRESH_SECRET: 'слишком-короткий' })).toThrow(
+      /JWT_REFRESH_SECRET/,
+    );
+  });
+
+  it('отвергает некорректный код региона для телефонов', () => {
+    expect(() => validateEnv({ ...MINIMAL, DEFAULT_PHONE_REGION: 'TJK' })).toThrow(
+      /DEFAULT_PHONE_REGION/,
+    );
   });
 
   it('приводит числовые переменные из строк', () => {

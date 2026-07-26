@@ -50,6 +50,8 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-assignment': 'off',
       // `app.getHttpServer()` типизирован как `any` — в тестах это допустимо.
       '@typescript-eslint/no-unsafe-argument': 'off',
+      // `expect(mock.method)` — обычная форма записи для jest, и `this` там не нужен.
+      '@typescript-eslint/unbound-method': 'off',
     },
   },
 );

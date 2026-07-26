@@ -2,6 +2,8 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
+import { trimString } from '../transforms/string.transforms';
+
 export enum SortOrder {
   Asc = 'asc',
   Desc = 'desc',
@@ -13,9 +15,6 @@ export const MAX_LIMIT = 100;
 
 const toInt = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
-
-const trim = ({ value }: { value: unknown }): unknown =>
-  typeof value === 'string' ? value.trim() : value;
 
 /**
  * Базовые query-параметры списков (ТЗ 3.5): пагинация, поиск, сортировка.
@@ -44,14 +43,14 @@ export class PaginationQueryDto {
 
   @ApiPropertyOptional({ description: 'Строка полнотекстового поиска' })
   @IsOptional()
-  @Transform(trim)
+  @Transform(trimString)
   @IsString()
   @MaxLength(200)
   search?: string;
 
   @ApiPropertyOptional({ description: 'Поле сортировки' })
   @IsOptional()
-  @Transform(trim)
+  @Transform(trimString)
   @IsString()
   @MaxLength(60)
   sort?: string;

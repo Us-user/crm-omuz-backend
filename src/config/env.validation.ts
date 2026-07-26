@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsISO31661Alpha2,
   IsOptional,
   IsString,
   Max,
@@ -10,6 +11,9 @@ import {
   MinLength,
   validateSync,
 } from 'class-validator';
+
+/** Минимальная длина секрета подписи JWT — 256 бит энтропии в hex/base64. */
+const MIN_SECRET_LENGTH = 32;
 
 export enum NodeEnv {
   Development = 'development',
@@ -78,6 +82,38 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(0)
   REDIS_DB: number = 0;
+
+  // --- Аутентификация (ТЗ 3.1) ---
+  /**
+   * Секреты подписи JWT. Разные для access и refresh: даже если утечёт один,
+   * подделать токены другого типа нельзя.
+   */
+  @IsString()
+  @MinLength(MIN_SECRET_LENGTH)
+  JWT_ACCESS_SECRET!: string;
+
+  @IsString()
+  @MinLength(MIN_SECRET_LENGTH)
+  JWT_REFRESH_SECRET!: string;
+
+  /** Время жизни access-токена в секундах. ТЗ: 1 час. */
+  @Transform(toInt)
+  @IsInt()
+  @Min(60)
+  JWT_ACCESS_TTL_SECONDS: number = 60 * 60;
+
+  /** Время жизни refresh-токена в секундах. ТЗ: 2 недели. */
+  @Transform(toInt)
+  @IsInt()
+  @Min(60)
+  JWT_REFRESH_TTL_SECONDS: number = 14 * 24 * 60 * 60;
+
+  /**
+   * Регион по умолчанию для нормализации телефонов в E.164 (ТЗ 3.1):
+   * номер без «+» трактуется как номер этого региона. Таджикистан — `TJ`.
+   */
+  @IsISO31661Alpha2()
+  DEFAULT_PHONE_REGION: string = 'TJ';
 
   // --- Наблюдаемость ---
   @IsEnum(LogLevel)

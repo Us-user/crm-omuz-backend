@@ -7,3 +7,4 @@ export * from './interceptors/transform-response.interceptor';
 export * from './interfaces/api-response.interface';
 export * from './swagger/api-error.dto';
 export * from './swagger/api-response.decorators';
+export * from './transforms/string.transforms';

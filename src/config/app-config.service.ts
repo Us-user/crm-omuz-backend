@@ -39,6 +39,25 @@ export class AppConfigService {
     return this.get('LOG_LEVEL');
   }
 
+  get jwt(): {
+    accessSecret: string;
+    refreshSecret: string;
+    accessTtlSeconds: number;
+    refreshTtlSeconds: number;
+  } {
+    return {
+      accessSecret: this.get('JWT_ACCESS_SECRET'),
+      refreshSecret: this.get('JWT_REFRESH_SECRET'),
+      accessTtlSeconds: this.get('JWT_ACCESS_TTL_SECONDS'),
+      refreshTtlSeconds: this.get('JWT_REFRESH_TTL_SECONDS'),
+    };
+  }
+
+  /** Регион по умолчанию для нормализации телефонов в E.164. */
+  get defaultPhoneRegion(): string {
+    return this.get('DEFAULT_PHONE_REGION');
+  }
+
   get swaggerEnabled(): boolean {
     return this.get('SWAGGER_ENABLED');
   }
