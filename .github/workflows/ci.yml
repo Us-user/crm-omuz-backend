@@ -45,6 +45,7 @@ jobs:
       # Тестовые значения: боевые секреты живут только в секретах окружения.
       JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
       JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
+      PASSWORD_RESET_SECRET: ci-password-reset-secret-at-least-32-characters-long
 
     steps:
       - uses: actions/checkout@v4

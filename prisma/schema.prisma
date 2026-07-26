@@ -3,7 +3,8 @@
 // Фаза 1 — идентичность и аутентификация (ТЗ 3.1):
 //   Account  — логин (телефон в E.164) + argon2id-хеш пароля;
 //   Student / Employee — профили, взаимоисключающие, каждый опционально связан с Account;
-//   Session  — серверные refresh-сессии (одна строка = одно устройство).
+//   Session  — серверные refresh-сессии (одна строка = одно устройство);
+//   PasswordResetCode — одноразовый 6-значный код сброса пароля по email.
 //
 // Доменные модули (Branch, Position, Group, …) добавляются в Фазах 2–3; поля-связи
 // к ним появятся в профилях тогда же.
@@ -74,9 +75,10 @@ model Account {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  student  Student?
-  employee Employee?
-  sessions Session[]
+  student            Student?
+  employee           Employee?
+  sessions           Session[]
+  passwordResetCodes PasswordResetCode[]
 
   @@index([status])
   @@map("accounts")
@@ -172,4 +174,30 @@ model Session {
   @@index([accountId, revokedAt])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+/// Одноразовый код сброса пароля по email (ТЗ 3.1, 5.1): 6 цифр, ~10 минут,
+/// не более 3 запросов в час и 3 попыток ввода на код.
+///
+/// Хранится argon2id-хеш, а не сам код: пространство из 10^6 значений
+/// восстанавливается из быстрого хеша мгновенно, если утечёт дамп БД.
+model PasswordResetCode {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @db.Uuid
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  codeHash String
+
+  /// Сколько раз код вводили неверно. На пределе код гасится досрочно.
+  attempts Int @default(0)
+
+  expiresAt DateTime
+  /// Проставляется при успешном сбросе или при досрочном гашении кода.
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  /// Поиск живого кода аккаунта и подсчёт запросов за час.
+  @@index([accountId, createdAt])
+  @@index([expiresAt])
+  @@map("password_reset_codes")
 }

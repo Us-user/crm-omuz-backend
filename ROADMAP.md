@@ -12,7 +12,7 @@
 
 **Стек:** TypeScript · NestJS · PostgreSQL · Prisma · Redis + BullMQ · JWT + Passport · argon2id · Swagger/OpenAPI · Pino · Docker · Jest + supertest.
 
-**Общий прогресс:** Фаза 1 из 14 · ~14% (Фаза 0 — 11/13 пунктов, Фаза 1 — 7/9 пунктов)
+**Общий прогресс:** Фаза 1 из 14 · 19 из 97 пунктов (~20%) — Фаза 0: 11/13 · Фаза 1: 8/9
 
 ---
 
@@ -43,7 +43,7 @@
 - [x] JWT: access 1ч / refresh 2 недели (Passport стратегии)
 - [x] Ротация refresh (старый инвалидируется), серверные сессии
 - [x] `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/logout-all`
-- [ ] Сброс пароля по email: `POST /auth/password/forgot`, `POST /auth/password/reset` (6-значный код, ~10 мин)
+- [x] Сброс пароля по email: `POST /auth/password/forgot`, `POST /auth/password/reset` (6-значный код, ~10 мин, лимит 3/час) — письмо через абстракцию `MailerService`; реальный провайдер подключается в Фазе 11
 - [ ] Основа перевода Студент → Сотрудник (сохранение логина и истории)
 
 ## Фаза 2 — Роли, позиции и права (RBAC) · ТЗ 3.2, 5.15
@@ -143,7 +143,7 @@
 Цель: коммуникации через абстракцию отправителя.
 
 - [ ] Модели: `SmsTemplate`, `Mailing`, `Notification`
-- [ ] Абстракция «отправитель сообщений» (Telegram основной, SMS опционально)
+- [~] Абстракция «отправитель сообщений» (Telegram основной, SMS опционально) — email-канал сделан в Фазе 1 (`MailerService` + заглушка в лог); осталось подключить реального провайдера почты, Telegram и SMS
 - [ ] Рассылки: аудитории (Group/Students/Mentors/Leads/Graduates), Send (`/mailings`)
 - [ ] Шаблоны CRUD + история (`/mailings/templates`, `/mailings/history`)
 - [ ] Поздравления с ДР (частный случай), фоновые задачи BullMQ

@@ -4,6 +4,7 @@ const MINIMAL = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/db?schema=public',
   JWT_ACCESS_SECRET: 'access-secret-at-least-32-characters-long',
   JWT_REFRESH_SECRET: 'refresh-secret-at-least-32-characters-long',
+  PASSWORD_RESET_SECRET: 'password-reset-secret-at-least-32-characters-long',
 };
 
 describe('validateEnv', () => {
@@ -19,6 +20,7 @@ describe('validateEnv', () => {
     expect(env.JWT_ACCESS_TTL_SECONDS).toBe(3600);
     expect(env.JWT_REFRESH_TTL_SECONDS).toBe(1_209_600);
     expect(env.DEFAULT_PHONE_REGION).toBe('TJ');
+    expect(env.MAIL_FROM).toBe('no-reply@omuz.tj');
   });
 
   it('падает, если DATABASE_URL не задан', () => {
@@ -32,6 +34,19 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...MINIMAL, JWT_REFRESH_SECRET: 'слишком-короткий' })).toThrow(
       /JWT_REFRESH_SECRET/,
     );
+  });
+
+  it('требует секрет подписи кодов сброса пароля', () => {
+    expect(() => validateEnv({ ...MINIMAL, PASSWORD_RESET_SECRET: undefined })).toThrow(
+      /PASSWORD_RESET_SECRET/,
+    );
+    expect(() => validateEnv({ ...MINIMAL, PASSWORD_RESET_SECRET: 'короткий' })).toThrow(
+      /PASSWORD_RESET_SECRET/,
+    );
+  });
+
+  it('отвергает некорректный адрес отправителя писем', () => {
+    expect(() => validateEnv({ ...MINIMAL, MAIL_FROM: 'не-адрес' })).toThrow(/MAIL_FROM/);
   });
 
   it('отвергает некорректный код региона для телефонов', () => {

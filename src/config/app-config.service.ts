@@ -53,9 +53,19 @@ export class AppConfigService {
     };
   }
 
+  /** Секрет подписи одноразовых кодов сброса пароля (ТЗ 3.1). */
+  get passwordResetSecret(): string {
+    return this.get('PASSWORD_RESET_SECRET');
+  }
+
   /** Регион по умолчанию для нормализации телефонов в E.164. */
   get defaultPhoneRegion(): string {
     return this.get('DEFAULT_PHONE_REGION');
+  }
+
+  /** Адрес отправителя писем (ТЗ 3.4). */
+  get mailFrom(): string {
+    return this.get('MAIL_FROM');
   }
 
   get swaggerEnabled(): boolean {

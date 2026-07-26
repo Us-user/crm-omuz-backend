@@ -10,6 +10,7 @@ process.env.LOG_LEVEL = 'silent';
 // поэтому тесты не зависят от содержимого локального `.env` и остаются детерминированными.
 process.env.JWT_ACCESS_SECRET = 'test-access-secret-at-least-32-characters-long';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters-long';
+process.env.PASSWORD_RESET_SECRET = 'test-password-reset-secret-at-least-32-characters-long';
 
 // Если локального `.env` нет (например, в CI) — подставляем заглушку, чтобы тесты,
 // не работающие с БД, поднимались без внешней конфигурации.

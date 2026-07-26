@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Locale, Prisma, Session } from '@prisma/client';
+import type { Locale, PasswordResetCode, Prisma, Session } from '@prisma/client';
 import { AccountType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -44,6 +44,19 @@ export interface CreateSessionInput {
 
 export type RotateSessionInput = Omit<CreateSessionInput, 'id' | 'accountId'>;
 
+export interface CreatePasswordResetCodeInput {
+  accountId: string;
+  /** argon2id-хеш кода: сам код в БД не попадает. */
+  codeHash: string;
+  expiresAt: Date;
+}
+
+export interface CompletePasswordResetInput {
+  accountId: string;
+  codeId: string;
+  passwordHash: string;
+}
+
 /**
  * Доступ к данным Auth (`Controller → Service → Repository`).
  * Здесь нет бизнес-правил — только запросы к Prisma.
@@ -58,6 +71,11 @@ export class AuthRepository {
 
   findAccountById(id: string): Promise<AccountWithProfile | null> {
     return this.prisma.account.findUnique({ where: { id }, select: ACCOUNT_SELECT });
+  }
+
+  /** Поиск по email — точка входа сброса пароля (ТЗ 5.1). */
+  findAccountByEmail(email: string): Promise<AccountWithProfile | null> {
+    return this.prisma.account.findUnique({ where: { email }, select: ACCOUNT_SELECT });
   }
 
   /** Есть ли аккаунт с таким телефоном или email — проверка до создания (409). */
@@ -153,5 +171,79 @@ export class AuthRepository {
       data: { revokedAt: new Date() },
     });
     return count;
+  }
+
+  // --- Сброс пароля (ТЗ 3.1, 5.1) ---
+
+  /** Сколько кодов аккаунт запросил начиная с `since` — основа лимита «3 в час». */
+  countPasswordResetCodesSince(accountId: string, since: Date): Promise<number> {
+    return this.prisma.passwordResetCode.count({
+      where: { accountId, createdAt: { gte: since } },
+    });
+  }
+
+  createPasswordResetCode(input: CreatePasswordResetCodeInput): Promise<PasswordResetCode> {
+    return this.prisma.passwordResetCode.create({ data: input });
+  }
+
+  /**
+   * Живой код аккаунта: не использован и не просрочен. Берётся самый свежий —
+   * предыдущие гасятся при выпуске нового, но выборка от них не зависит.
+   */
+  findActivePasswordResetCode(accountId: string, now: Date): Promise<PasswordResetCode | null> {
+    return this.prisma.passwordResetCode.findFirst({
+      where: { accountId, consumedAt: null, expiresAt: { gt: now } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** Гасит все живые коды аккаунта: новый код должен оставаться единственным. */
+  async consumeActivePasswordResetCodes(accountId: string): Promise<number> {
+    const { count } = await this.prisma.passwordResetCode.updateMany({
+      where: { accountId, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    return count;
+  }
+
+  /** Отмечает неудачную попытку ввода; `consume` гасит код на исчерпании лимита. */
+  async registerPasswordResetAttempt(codeId: string, consume: boolean): Promise<void> {
+    await this.prisma.passwordResetCode.update({
+      where: { id: codeId },
+      data: {
+        attempts: { increment: 1 },
+        ...(consume ? { consumedAt: new Date() } : {}),
+      },
+    });
+  }
+
+  /**
+   * Смена пароля одной транзакцией (ТЗ 7): код гасится, пароль меняется,
+   * все сессии отзываются. Частичное применение оставило бы либо действующий
+   * код, либо живые сессии со старым паролем.
+   *
+   * @returns число погашенных сессий.
+   */
+  async completePasswordReset(input: CompletePasswordResetInput): Promise<number> {
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.passwordResetCode.update({
+        where: { id: input.codeId },
+        data: { consumedAt: now },
+      });
+
+      await tx.account.update({
+        where: { id: input.accountId },
+        data: { passwordHash: input.passwordHash },
+      });
+
+      const { count } = await tx.session.updateMany({
+        where: { accountId: input.accountId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      return count;
+    });
   }
 }

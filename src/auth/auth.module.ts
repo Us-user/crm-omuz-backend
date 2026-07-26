@@ -9,6 +9,8 @@ import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PasswordService } from './password.service';
+import { PasswordResetService } from './password-reset.service';
+import { ResetCodeService } from './reset-code.service';
 import { JwtAccessStrategy } from './strategies/jwt-access.strategy';
 import { TokenService } from './token.service';
 
@@ -24,6 +26,8 @@ import { TokenService } from './token.service';
     AuthService,
     AuthRepository,
     PasswordService,
+    PasswordResetService,
+    ResetCodeService,
     TokenService,
     JwtAccessStrategy,
     // Глобально: по умолчанию защищён каждый эндпоинт, открывается через `@Public()` (ТЗ 3.8).

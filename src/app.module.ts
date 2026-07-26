@@ -6,6 +6,7 @@ import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
+import { MailerModule } from './mailer/mailer.module';
 import { PhoneModule } from './phone/phone.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
@@ -18,6 +19,7 @@ import { RedisModule } from './redis/redis.module';
     PrismaModule,
     RedisModule,
     QueueModule,
+    MailerModule,
     PhoneModule,
     AuthModule,
     HealthModule,

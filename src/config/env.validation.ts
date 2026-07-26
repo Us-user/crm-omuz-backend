@@ -1,6 +1,7 @@
 import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsBoolean,
+  IsEmail,
   IsEnum,
   IsInt,
   IsISO31661Alpha2,
@@ -109,11 +110,24 @@ export class EnvironmentVariables {
   JWT_REFRESH_TTL_SECONDS: number = 14 * 24 * 60 * 60;
 
   /**
+   * Секрет подписи кодов сброса пароля (ТЗ 3.1). Отдельный от JWT: код короткий,
+   * и именно этот секрет делает бессмысленным перебор утёкшей таблицы кодов.
+   */
+  @IsString()
+  @MinLength(MIN_SECRET_LENGTH)
+  PASSWORD_RESET_SECRET!: string;
+
+  /**
    * Регион по умолчанию для нормализации телефонов в E.164 (ТЗ 3.1):
    * номер без «+» трактуется как номер этого региона. Таджикистан — `TJ`.
    */
   @IsISO31661Alpha2()
   DEFAULT_PHONE_REGION: string = 'TJ';
+
+  // --- Почта (ТЗ 3.4) ---
+  /** Адрес отправителя писем: код сброса пароля, приглашения, рассылки. */
+  @IsEmail()
+  MAIL_FROM: string = 'no-reply@omuz.tj';
 
   // --- Наблюдаемость ---
   @IsEnum(LogLevel)

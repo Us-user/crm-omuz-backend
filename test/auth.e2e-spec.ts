@@ -4,12 +4,14 @@ import type { INestApplication } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { AccountStatus, AccountType, Locale } from '@prisma/client';
-import type { Session } from '@prisma/client';
+import type { PasswordResetCode, Session } from '@prisma/client';
 import request from 'supertest';
 
 import { AuthModule } from 'src/auth/auth.module';
 import type {
   AccountWithProfile,
+  CompletePasswordResetInput,
+  CreatePasswordResetCodeInput,
   CreateSessionInput,
   CreateStudentAccountInput,
   RotateSessionInput,
@@ -19,6 +21,9 @@ import { configureApp } from 'src/bootstrap';
 import { AllExceptionsFilter, TransformResponseInterceptor } from 'src/common';
 import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
+import type { MailMessage } from 'src/mailer';
+import { MailerService } from 'src/mailer';
+import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
 
 /**
@@ -31,9 +36,15 @@ class InMemoryAuthRepository {
   private readonly accounts = new Map<string, AccountWithProfile>();
   private readonly studentPhones = new Map<string, { id: string }>();
   private readonly sessions = new Map<string, Session>();
+  private readonly resetCodes = new Map<string, PasswordResetCode>();
 
   findAccountByPhone(phone: string): Promise<AccountWithProfile | null> {
     const found = [...this.accounts.values()].find((a) => a.phone === phone);
+    return Promise.resolve(found ?? null);
+  }
+
+  findAccountByEmail(email: string): Promise<AccountWithProfile | null> {
+    const found = [...this.accounts.values()].find((a) => a.email === email);
     return Promise.resolve(found ?? null);
   }
 
@@ -128,10 +139,92 @@ class InMemoryAuthRepository {
     return Promise.resolve(count);
   }
 
+  // --- Сброс пароля ---
+
+  countPasswordResetCodesSince(accountId: string, since: Date): Promise<number> {
+    const count = [...this.resetCodes.values()].filter(
+      (code) => code.accountId === accountId && code.createdAt >= since,
+    ).length;
+
+    return Promise.resolve(count);
+  }
+
+  createPasswordResetCode(input: CreatePasswordResetCodeInput): Promise<PasswordResetCode> {
+    const code: PasswordResetCode = {
+      id: randomUUID(),
+      accountId: input.accountId,
+      codeHash: input.codeHash,
+      attempts: 0,
+      expiresAt: input.expiresAt,
+      consumedAt: null,
+      createdAt: new Date(),
+    };
+
+    this.resetCodes.set(code.id, code);
+    return Promise.resolve(code);
+  }
+
+  findActivePasswordResetCode(accountId: string, now: Date): Promise<PasswordResetCode | null> {
+    const found = [...this.resetCodes.values()]
+      .filter((c) => c.accountId === accountId && !c.consumedAt && c.expiresAt > now)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    return Promise.resolve(found[0] ?? null);
+  }
+
+  consumeActivePasswordResetCodes(accountId: string): Promise<number> {
+    let count = 0;
+    for (const code of this.resetCodes.values()) {
+      if (code.accountId === accountId && !code.consumedAt) {
+        code.consumedAt = new Date();
+        count += 1;
+      }
+    }
+    return Promise.resolve(count);
+  }
+
+  registerPasswordResetAttempt(codeId: string, consume: boolean): Promise<void> {
+    const code = this.resetCodes.get(codeId);
+    if (code) {
+      code.attempts += 1;
+      if (consume) code.consumedAt = new Date();
+    }
+    return Promise.resolve();
+  }
+
+  completePasswordReset(input: CompletePasswordResetInput): Promise<number> {
+    const code = this.resetCodes.get(input.codeId);
+    if (code) code.consumedAt = new Date();
+
+    const account = this.accounts.get(input.accountId);
+    if (account) account.passwordHash = input.passwordHash;
+
+    return this.revokeAllSessions(input.accountId);
+  }
+
   /** Для сценария с заблокированным аккаунтом. */
   block(phone: string): void {
     const account = [...this.accounts.values()].find((a) => a.phone === phone);
     if (account) account.status = AccountStatus.BLOCKED;
+  }
+}
+
+/** Перехватывает письма вместо провайдера — код читается так же, как пользователем. */
+class RecordingMailer extends MailerService {
+  readonly sent: MailMessage[] = [];
+
+  send(message: MailMessage): Promise<void> {
+    this.sent.push(message);
+    return Promise.resolve();
+  }
+
+  /** Шестизначный код из последнего письма. */
+  lastCode(): string {
+    const last = this.sent.at(-1);
+    const found = last ? /\b(\d{6})\b/.exec(last.text) : null;
+    if (!found) throw new Error('В последнем письме нет шестизначного кода');
+
+    return found[1];
   }
 }
 
@@ -151,14 +244,16 @@ const CANONICAL_PHONE = '+992901234567';
 describe('Auth (e2e, хранилище в памяти)', () => {
   let app: INestApplication;
   let repository: InMemoryAuthRepository;
+  let mailer: RecordingMailer;
 
   const url = (path: string) => `/api/v1/auth/${path}`;
 
   beforeEach(async () => {
     repository = new InMemoryAuthRepository();
+    mailer = new RecordingMailer();
 
     const moduleRef = await Test.createTestingModule({
-      imports: [AppConfigModule, LoggerModule, PhoneModule, AuthModule],
+      imports: [AppConfigModule, LoggerModule, MailerModule, PhoneModule, AuthModule],
       providers: [
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
         { provide: APP_INTERCEPTOR, useClass: TransformResponseInterceptor },
@@ -166,6 +261,8 @@ describe('Auth (e2e, хранилище в памяти)', () => {
     })
       .overrideProvider(AuthRepository)
       .useValue(repository)
+      .overrideProvider(MailerService)
+      .useValue(mailer)
       .compile();
 
     app = moduleRef.createNestApplication({ logger: false });
@@ -373,6 +470,146 @@ describe('Auth (e2e, хранилище в памяти)', () => {
         .post(url('refresh'))
         .send({ refreshToken: second.body.data.tokens.refreshToken })
         .expect(401);
+    });
+  });
+
+  describe('Сброс пароля по email (ТЗ 3.1, 5.1)', () => {
+    const CANONICAL_EMAIL = 'farrukh@example.tj';
+    const NEW_PASSWORD = 'совсем-другой-пароль';
+
+    const forgot = (email = CANONICAL_EMAIL) =>
+      request(app.getHttpServer()).post(url('password/forgot')).send({ email });
+
+    const reset = (body: { email?: string; code: string; newPassword?: string }) =>
+      request(app.getHttpServer())
+        .post(url('password/reset'))
+        .send({ email: CANONICAL_EMAIL, newPassword: NEW_PASSWORD, ...body });
+
+    const login = (password: string) =>
+      request(app.getHttpServer()).post(url('login')).send({ phone: CANONICAL_PHONE, password });
+
+    it('отправляет письмо с шестизначным кодом на языке аккаунта', async () => {
+      await register().expect(201);
+
+      await forgot().expect(200);
+
+      expect(mailer.sent).toHaveLength(1);
+      expect(mailer.sent[0].to).toBe(CANONICAL_EMAIL);
+      expect(mailer.sent[0].subject).toBe('Восстановление пароля — CRM Omuz');
+      expect(mailer.lastCode()).toMatch(/^\d{6}$/);
+    });
+
+    it('отвечает одинаково на известный и неизвестный email, но письмо шлёт только на известный', async () => {
+      await register().expect(201);
+
+      const known = await forgot().expect(200);
+      const unknown = await forgot('нет-такого@example.tj').expect(200);
+
+      expect(unknown.body.data.message).toBe(known.body.data.message);
+      expect(mailer.sent).toHaveLength(1);
+    });
+
+    it('меняет пароль по коду: старый больше не пускает, новый пускает', async () => {
+      await register().expect(201);
+      await forgot().expect(200);
+
+      const response = await reset({ code: mailer.lastCode() }).expect(200);
+      expect(response.body.data.revokedSessions).toBeGreaterThanOrEqual(1);
+
+      await login(VALID_REGISTRATION.password).expect(401);
+      await login(NEW_PASSWORD).expect(200);
+    });
+
+    it('гасит все сессии: выданный до сброса refresh-токен больше не обменивается', async () => {
+      const registered = await register().expect(201);
+      const { refreshToken } = registered.body.data.tokens;
+
+      await forgot().expect(200);
+      await reset({ code: mailer.lastCode() }).expect(200);
+
+      await request(app.getHttpServer()).post(url('refresh')).send({ refreshToken }).expect(401);
+    });
+
+    it('отвечает 422 на неверный код', async () => {
+      await register().expect(201);
+      await forgot().expect(200);
+
+      const wrong = mailer.lastCode() === '000000' ? '000001' : '000000';
+      const response = await reset({ code: wrong }).expect(422);
+
+      expect(response.body.error.code).toBe('UNPROCESSABLE_ENTITY');
+    });
+
+    it('код одноразовый: второй раз тем же кодом — 422', async () => {
+      await register().expect(201);
+      await forgot().expect(200);
+      const code = mailer.lastCode();
+
+      await reset({ code }).expect(200);
+      await reset({ code, newPassword: 'ещё-один-пароль' }).expect(422);
+    });
+
+    it('новый запрос кода отменяет предыдущий', async () => {
+      await register().expect(201);
+
+      await forgot().expect(200);
+      const first = mailer.lastCode();
+
+      await forgot().expect(200);
+      const second = mailer.lastCode();
+      expect(second).not.toBe(first);
+
+      await reset({ code: first }).expect(422);
+      await reset({ code: second }).expect(200);
+    });
+
+    it('после трёх неверных попыток код гасится — верный уже не срабатывает (ТЗ 3.1)', async () => {
+      await register().expect(201);
+      await forgot().expect(200);
+      const code = mailer.lastCode();
+
+      const wrong = (n: number) => String(n).padStart(6, '0');
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const candidate = wrong(attempt) === code ? wrong(attempt + 100) : wrong(attempt);
+        await reset({ code: candidate }).expect(422);
+      }
+
+      await reset({ code }).expect(422);
+    });
+
+    it('перестаёт слать письма после трёх запросов в час (ТЗ 3.1)', async () => {
+      await register().expect(201);
+
+      for (let i = 0; i < 4; i += 1) {
+        await forgot().expect(200);
+      }
+
+      // Четвёртый запрос принят так же, как остальные, но письмо не ушло.
+      expect(mailer.sent).toHaveLength(3);
+    });
+
+    it('не шлёт код заблокированному аккаунту', async () => {
+      await register().expect(201);
+      repository.block(CANONICAL_PHONE);
+
+      await forgot().expect(200);
+
+      expect(mailer.sent).toHaveLength(0);
+    });
+
+    it('проверяет формат кода и длину нового пароля', async () => {
+      await register().expect(201);
+      await forgot().expect(200);
+
+      await reset({ code: '12345' }).expect(400);
+      await reset({ code: 'абвгде' }).expect(400);
+      await reset({ code: mailer.lastCode(), newPassword: 'корот' }).expect(400);
+    });
+
+    it('отвечает 400 на некорректный email', async () => {
+      const response = await forgot('не-адрес').expect(400);
+
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
     });
   });
 });
