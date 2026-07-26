@@ -1,12 +1,15 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { GroupStudentStatus, StudentStatus } from '@prisma/client';
 
-import { BusinessRuleException, SortOrder } from '../common';
-import { GroupStudentQueryDto, GroupStudentSortField } from './dto';
+import { BusinessRuleException, parseCsv, SortOrder } from '../common';
+import type { AppConfigService } from '../config';
+import { PhoneService } from '../phone/phone.service';
+import { ExportGroupStudentsQueryDto, GroupStudentQueryDto, GroupStudentSortField } from './dto';
 import type {
   CompetingMembership,
   GroupStudentRow,
   GroupStudentsRepository,
+  StudentByPhone,
   StudentCandidate,
   StudentGroup,
 } from './group-students.repository';
@@ -51,6 +54,14 @@ const row = (overrides: Partial<GroupStudentRow> = {}): GroupStudentRow => ({
   ...overrides,
 });
 
+const byPhone = (overrides: Partial<StudentByPhone> = {}): StudentByPhone => ({
+  id: STUDENT_ID,
+  firstName: 'Нигина',
+  lastName: 'Каримова',
+  phone: '+992901234567',
+  ...overrides,
+});
+
 const competing = (): CompetingMembership => ({
   studentId: STUDENT_ID,
   groupId: OTHER_GROUP_ID,
@@ -68,8 +79,10 @@ describe('GroupStudentsService', () => {
     Pick<
       GroupStudentsRepository,
       | 'findMany'
+      | 'findAllForExport'
       | 'findGroup'
       | 'findStudents'
+      | 'findStudentsByPhones'
       | 'findOne'
       | 'findMemberships'
       | 'findCompetingMemberships'
@@ -85,8 +98,10 @@ describe('GroupStudentsService', () => {
   beforeEach(() => {
     repository = {
       findMany: jest.fn().mockResolvedValue({ rows: [row()], total: 1 }),
+      findAllForExport: jest.fn().mockResolvedValue([row()]),
       findGroup: jest.fn().mockResolvedValue(group()),
       findStudents: jest.fn().mockResolvedValue([candidate()]),
+      findStudentsByPhones: jest.fn().mockResolvedValue([byPhone()]),
       findOne: jest.fn().mockResolvedValue(row()),
       findMemberships: jest.fn().mockResolvedValue([]),
       findCompetingMemberships: jest.fn().mockResolvedValue([]),
@@ -97,7 +112,12 @@ describe('GroupStudentsService', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     };
 
-    service = new GroupStudentsService(repository as unknown as GroupStudentsRepository);
+    // Настоящий `PhoneService`: импорт разбирает номера из файла теми же
+    // правилами, что и остальные модули (ТЗ 3.1), и заглушка проверяла бы
+    // не то поведение, которое увидит оператор.
+    const phones = new PhoneService({ defaultPhoneRegion: 'TJ' } as AppConfigService);
+
+    service = new GroupStudentsService(repository as unknown as GroupStudentsRepository, phones);
   });
 
   describe('Состав группы', () => {
@@ -457,6 +477,266 @@ describe('GroupStudentsService', () => {
       await expect(service.remove(GROUP_ID, STUDENT_ID)).rejects.toMatchObject({
         response: { message: 'Студент не состоит в этой группе' },
       });
+    });
+  });
+
+  describe('Выгрузка состава в CSV', () => {
+    const exportQuery = (overrides: Partial<ExportGroupStudentsQueryDto> = {}) =>
+      Object.assign(new ExportGroupStudentsQueryDto(), overrides);
+
+    it('собирает файл с заголовком и строкой на каждое членство', async () => {
+      const file = await service.exportCsv(GROUP_ID, exportQuery());
+      const records = parseCsv(file.content);
+
+      expect(records[0].values).toEqual([
+        'Телефон',
+        'Фамилия',
+        'Имя',
+        'Статус в группе',
+        'Причина',
+        'Дата смены статуса',
+        'Переведён из',
+        'Дата зачисления',
+        'Статус студента',
+      ]);
+      expect(records[1].values).toEqual([
+        '+992901234567',
+        'Каримова',
+        'Нигина',
+        'Учится',
+        '',
+        '',
+        '',
+        '2026-09-01',
+        'Активен',
+      ]);
+      expect(file.rows).toBe(1);
+    });
+
+    it('начинается с BOM — иначе Excel читает кириллицу как cp1251', () => {
+      return expect(
+        service.exportCsv(GROUP_ID, exportQuery()).then((file) => file.content.charCodeAt(0)),
+      ).resolves.toBe(0xfeff);
+    });
+
+    it('переводит статусы и даты в человекочитаемый вид', async () => {
+      repository.findAllForExport.mockResolvedValue([
+        row({
+          status: GroupStudentStatus.TRANSFERRED,
+          statusReason: 'Переехал в другой город',
+          statusChangedAt: new Date('2026-10-05T12:00:00.000Z'),
+          transferredFromGroup: { id: OTHER_GROUP_ID, name: 'Frontend-2' },
+          student: { ...row().student, status: StudentStatus.NO_ACTIVE },
+        }),
+      ]);
+
+      const records = parseCsv((await service.exportCsv(GROUP_ID, exportQuery())).content);
+
+      expect(records[1].values).toEqual([
+        '+992901234567',
+        'Каримова',
+        'Нигина',
+        'Переведён в другую группу',
+        'Переехал в другой город',
+        '2026-10-05',
+        'Frontend-2',
+        '2026-09-01',
+        'Неактивен',
+      ]);
+    });
+
+    it('передаёт доменные фильтры в выборку, но не окно страницы', async () => {
+      await service.exportCsv(
+        GROUP_ID,
+        exportQuery({ status: GroupStudentStatus.LEFT, search: 'каримова' }),
+      );
+
+      expect(repository.findAllForExport).toHaveBeenCalledWith({
+        groupId: GROUP_ID,
+        status: GroupStudentStatus.LEFT,
+        search: 'каримова',
+      });
+    });
+
+    it('имя файла содержит название группы, а запасное — только ASCII', async () => {
+      const file = await service.exportCsv(GROUP_ID, exportQuery());
+
+      expect(file.fileName).toMatch(/^Состав группы Frontend-1 \d{4}-\d{2}-\d{2}\.csv$/);
+      expect(file.asciiFileName).toMatch(/^group-students-\d{4}-\d{2}-\d{2}\.csv$/);
+    });
+
+    it('пустой состав даёт файл из одного заголовка, а не ошибку', async () => {
+      repository.findAllForExport.mockResolvedValue([]);
+
+      const file = await service.exportCsv(GROUP_ID, exportQuery());
+
+      expect(parseCsv(file.content)).toHaveLength(1);
+      expect(file.rows).toBe(0);
+    });
+
+    it('404 на неизвестную группу — до запроса состава', async () => {
+      repository.findGroup.mockResolvedValue(null);
+
+      await expect(service.exportCsv(GROUP_ID, exportQuery())).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(repository.findAllForExport).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Импорт состава из CSV', () => {
+    it('зачисляет студентов, найденных по телефону', async () => {
+      repository.countActive.mockResolvedValue(1);
+
+      const result = await service.importCsv(GROUP_ID, {
+        csv: 'Телефон\n+992901234567',
+      });
+
+      expect(repository.findStudentsByPhones).toHaveBeenCalledWith(['+992901234567']);
+      expect(repository.enroll).toHaveBeenCalledWith(GROUP_ID, [STUDENT_ID], expect.any(Date));
+      expect(result).toMatchObject({ groupId: GROUP_ID, imported: 1, enrolledCount: 1 });
+    });
+
+    it('нормализует телефон по правилам ТЗ 3.1 — локальный номер находит студента', async () => {
+      await service.importCsv(GROUP_ID, { csv: 'phone\n901234567' });
+
+      expect(repository.findStudentsByPhones).toHaveBeenCalledWith(['+992901234567']);
+    });
+
+    it('принимает файл собственной выгрузки без правки', async () => {
+      const exported = await service.exportCsv(GROUP_ID, new ExportGroupStudentsQueryDto());
+
+      await service.importCsv(GROUP_ID, { csv: exported.content });
+
+      expect(repository.findStudentsByPhones).toHaveBeenCalledWith(['+992901234567']);
+    });
+
+    it('колонка телефона ищется по названию, а не по позиции', async () => {
+      await service.importCsv(GROUP_ID, {
+        csv: 'Фамилия,Имя,Телефон\nКаримова,Нигина,+992901234567',
+      });
+
+      expect(repository.findStudentsByPhones).toHaveBeenCalledWith(['+992901234567']);
+    });
+
+    it('400, если колонки с телефоном в заголовке нет', async () => {
+      await expect(
+        service.importCsv(GROUP_ID, { csv: 'Фамилия,Имя\nКаримова,Нигина' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repository.enroll).not.toHaveBeenCalled();
+    });
+
+    it('400 на файл без строк данных', async () => {
+      await expect(service.importCsv(GROUP_ID, { csv: 'Телефон' })).rejects.toMatchObject({
+        response: { message: 'Файл не содержит ни одной строки с данными' },
+      });
+    });
+
+    it('400 на слишком длинный файл', async () => {
+      const csv = ['Телефон', ...Array.from({ length: 501 }, () => '+992901234567')].join('\n');
+
+      await expect(service.importCsv(GROUP_ID, { csv })).rejects.toMatchObject({
+        response: { message: expect.stringContaining('Слишком много строк') },
+      });
+    });
+
+    it('422 перечисляет все плохие строки с их номерами, ничего не зачисляя', async () => {
+      repository.findStudentsByPhones.mockResolvedValue([byPhone()]);
+
+      const csv = [
+        'Телефон',
+        '+992901234567', // строка 2 — найдётся
+        'не телефон', //    строка 3
+        '', //               строка 4 — пустая, пропускается разбором
+        '+992985550101', //  строка 5 — профиля нет
+        '+992901234567', //  строка 6 — повтор строки 2
+      ].join('\n');
+
+      await expect(service.importCsv(GROUP_ID, { csv })).rejects.toMatchObject({
+        response: {
+          details: {
+            errors: 3,
+            rows: [
+              { line: 3, reason: 'Телефон не распознан' },
+              { line: 5, reason: 'Студент с таким телефоном не найден' },
+              { line: 6, reason: 'Повтор телефона из строки 2' },
+            ],
+          },
+        },
+      });
+      expect(repository.enroll).not.toHaveBeenCalled();
+    });
+
+    it('422 на пустую ячейку телефона', async () => {
+      await expect(
+        service.importCsv(GROUP_ID, { csv: 'Телефон,Фамилия\n,Каримова' }),
+      ).rejects.toMatchObject({
+        response: { details: { rows: [{ line: 2, reason: 'Телефон не указан' }] } },
+      });
+    });
+
+    it('422 на уже учащегося в этой группе — с номером его строки', async () => {
+      repository.findMemberships.mockResolvedValue([row()]);
+
+      await expect(
+        service.importCsv(GROUP_ID, { csv: 'Телефон\n+992901234567' }),
+      ).rejects.toMatchObject({
+        response: { details: { rows: [{ line: 2, reason: 'Уже учится в этой группе' }] } },
+      });
+      expect(repository.enroll).not.toHaveBeenCalled();
+    });
+
+    it('покинувший группу импортом зачисляется заново', async () => {
+      repository.findMemberships.mockResolvedValue([row({ status: GroupStudentStatus.LEFT })]);
+
+      await service.importCsv(GROUP_ID, { csv: 'Телефон\n+992901234567' });
+
+      expect(repository.enroll).toHaveBeenCalledWith(GROUP_ID, [STUDENT_ID], expect.any(Date));
+    });
+
+    it('422 на студента из другой группы того же курса — с названием группы', async () => {
+      repository.findCompetingMemberships.mockResolvedValue([competing()]);
+
+      await expect(
+        service.importCsv(GROUP_ID, { csv: 'Телефон\n+992901234567' }),
+      ).rejects.toMatchObject({
+        response: {
+          details: {
+            rows: [{ line: 2, reason: 'Уже учится в другой группе этого курса: Frontend-2' }],
+          },
+        },
+      });
+      expect(repository.findCompetingMemberships).toHaveBeenCalledWith(
+        COURSE_ID,
+        [STUDENT_ID],
+        [GROUP_ID],
+      );
+    });
+
+    it('в ответе перечисляется не больше 50 строк, но их общее число названо', async () => {
+      repository.findStudentsByPhones.mockResolvedValue([]);
+      const csv = [
+        'Телефон',
+        ...Array.from({ length: 60 }, (_, index) => `+99290123${String(4000 + index)}`),
+      ].join('\n');
+
+      await expect(service.importCsv(GROUP_ID, { csv })).rejects.toMatchObject({
+        response: { details: { errors: 60 } },
+      });
+
+      const error = await service.importCsv(GROUP_ID, { csv }).catch((cause: unknown) => cause);
+      const details = (error as { response: { details: { rows: unknown[] } } }).response.details;
+
+      expect(details.rows).toHaveLength(50);
+    });
+
+    it('404 на неизвестную группу — до разбора файла', async () => {
+      repository.findGroup.mockResolvedValue(null);
+
+      await expect(
+        service.importCsv(GROUP_ID, { csv: 'Телефон\n+992901234567' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repository.findStudentsByPhones).not.toHaveBeenCalled();
     });
   });
 });

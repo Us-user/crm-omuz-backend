@@ -16,8 +16,10 @@ import { GroupStudentsModule } from 'src/group-students/group-students.module';
 import { GroupStudentsRepository } from 'src/group-students/group-students.repository';
 import type {
   CompetingMembership,
+  GroupStudentFilter,
   GroupStudentListParams,
   GroupStudentRow,
+  StudentByPhone,
   StudentCandidate,
   StudentGroup,
   TransferInput,
@@ -132,6 +134,43 @@ class InMemoryStudentsStore {
       rows: matched.slice(params.skip, params.skip + params.take),
       total: matched.length,
     });
+  }
+
+  findAllForExport(filter: GroupStudentFilter): Promise<GroupStudentRow[]> {
+    const search = filter.search?.toLowerCase();
+
+    return Promise.resolve(
+      [...this.memberships.values()]
+        .filter((membership) => membership.groupId === filter.groupId)
+        .filter((membership) => filter.status === undefined || membership.status === filter.status)
+        .filter(
+          (membership) =>
+            search === undefined ||
+            [
+              membership.student.firstName,
+              membership.student.lastName,
+              membership.student.phone,
+            ].some((field) => field.toLowerCase().includes(search)),
+        )
+        .sort(
+          (a, b) =>
+            a.student.lastName.localeCompare(b.student.lastName) ||
+            a.student.firstName.localeCompare(b.student.firstName),
+        ),
+    );
+  }
+
+  findStudentsByPhones(phones: string[]): Promise<StudentByPhone[]> {
+    return Promise.resolve(
+      [...this.students.values()]
+        .filter((student) => phones.includes(student.phone))
+        .map((student) => ({
+          id: student.id,
+          firstName: student.firstName,
+          lastName: student.lastName,
+          phone: student.phone,
+        })),
+    );
   }
 
   findGroup(id: string): Promise<StudentGroup | null> {
@@ -359,8 +398,10 @@ describe('Состав группы (e2e, хранилище в памяти)', 
       .overrideProvider(GroupStudentsRepository)
       .useValue({
         findMany: (params: GroupStudentListParams) => store.findMany(params),
+        findAllForExport: (filter: GroupStudentFilter) => store.findAllForExport(filter),
         findGroup: (id: string) => store.findGroup(id),
         findStudents: (ids: string[]) => store.findStudents(ids),
+        findStudentsByPhones: (phones: string[]) => store.findStudentsByPhones(phones),
         findOne: (groupId: string, studentId: string) => store.findOne(groupId, studentId),
         findMemberships: (groupId: string, studentIds: string[]) =>
           store.findMemberships(groupId, studentIds),
@@ -1102,6 +1143,318 @@ describe('Состав группы (e2e, хранилище в памяти)', 
     });
   });
 
+  describe('Выгрузка в CSV (ТЗ 5.5: Export)', () => {
+    /** Зачисляет студентов в группу — общая подготовка выгрузки и импорта. */
+    const enroll = async (groupId: string, studentIds: string[]): Promise<void> => {
+      await send('post', `/api/v1/groups/${groupId}/students`, await manager(), {
+        studentIds,
+      }).expect(201);
+    };
+
+    const manager = () => actor('Permission.Groups.ManageStudents');
+
+    it('отдаёт text/csv с BOM, а не { data }', async () => {
+      const { group, nigina } = scene();
+      await enroll(group.id, [nigina.id]);
+
+      const response = await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      expect(response.headers['content-type']).toContain('text/csv');
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(response.text.charCodeAt(0)).toBe(0xfeff);
+      expect(response.text.startsWith(`${String.fromCharCode(0xfeff)}Телефон,`)).toBe(true);
+    });
+
+    it('в файле — заголовок и строка на каждое членство, в порядке фамилий', async () => {
+      const { group, nigina, farrukh } = scene();
+      await enroll(group.id, [nigina.id, farrukh.id]);
+
+      const response = await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      const lines = response.text.trim().split('\r\n');
+
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toContain('Каримова');
+      expect(lines[2]).toContain('Раҳимов');
+    });
+
+    it('фильтр status выгружает секцию «Left course» отдельным файлом', async () => {
+      const { group, nigina, farrukh } = scene();
+      const token = await manager();
+      await enroll(group.id, [nigina.id, farrukh.id]);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Переехала в другой город',
+      }).expect(200);
+
+      const response = await get(
+        `/api/v1/groups/${group.id}/students/export?status=LEFT`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      const lines = response.text.trim().split('\r\n');
+
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain('Покинул курс');
+      expect(lines[1]).toContain('Переехала в другой город');
+    });
+
+    it('имя файла в Content-Disposition содержит название группы', async () => {
+      const { group, nigina } = scene();
+      await enroll(group.id, [nigina.id]);
+
+      const response = await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      const disposition = response.headers['content-disposition'];
+
+      expect(disposition).toContain('filename="group-students-');
+      expect(decodeURIComponent(disposition)).toContain('Состав группы Frontend-1');
+    });
+
+    it('пустой состав — файл из одного заголовка, а не 404', async () => {
+      const { group } = scene();
+
+      const response = await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      expect(response.text.trim().split('\r\n')).toHaveLength(1);
+    });
+
+    it('выгрузка требует своего права: ManageStudents её не открывает', async () => {
+      const { group } = scene();
+
+      await get(`/api/v1/groups/${group.id}/students/export`, await manager()).expect(403);
+      await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Views'),
+      ).expect(403);
+    });
+
+    it('404 на неизвестную группу и 400 на не-UUID в пути', async () => {
+      const token = await actor('Permission.Groups.Export');
+
+      await get(`/api/v1/groups/${randomUUID()}/students/export`, token).expect(404);
+      await get('/api/v1/groups/не-uuid/students/export', token).expect(400);
+    });
+  });
+
+  describe('Импорт из CSV (ТЗ 5.5: Import)', () => {
+    const importer = () => actor('Permission.Groups.Import');
+
+    it('зачисляет студентов, найденных по телефону', async () => {
+      const { group, nigina, farrukh } = scene();
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv: `Телефон\n${nigina.phone}\n${farrukh.phone}` },
+      ).expect(200);
+
+      const body = dataOf<{ imported: number; enrolledCount: number; students: MembershipBody[] }>(
+        response,
+      );
+
+      expect(body).toMatchObject({ imported: 2, enrolledCount: 2 });
+      expect(body.students.map((membership) => membership.student.id)).toEqual([
+        nigina.id,
+        farrukh.id,
+      ]);
+    });
+
+    it('файл собственной выгрузки принимается обратно без правки', async () => {
+      const { group, twinGroup, nigina, farrukh } = scene();
+      await send(
+        'post',
+        `/api/v1/groups/${group.id}/students`,
+        await actor('Permission.Groups.ManageStudents'),
+        { studentIds: [nigina.id, farrukh.id] },
+      ).expect(201);
+
+      const exported = await get(
+        `/api/v1/groups/${group.id}/students/export`,
+        await actor('Permission.Groups.Export'),
+      ).expect(200);
+
+      // Импортируем в соседнюю группу того же курса — сначала освободив курс.
+      await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/change-status`,
+        await actor('Permission.Groups.ManageStudents'),
+        {
+          studentIds: [nigina.id, farrukh.id],
+          status: GroupStudentStatus.LEFT,
+          reason: 'Поток закрыт, переносим состав',
+        },
+      ).expect(200);
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${twinGroup.id}/students/import`,
+        await importer(),
+        { csv: exported.text },
+      ).expect(200);
+
+      expect(dataOf<{ imported: number }>(response).imported).toBe(2);
+    });
+
+    it('точка с запятой из Excel и локальный формат номера тоже читаются', async () => {
+      const { group, nigina } = scene();
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv: `Фамилия;Телефон\r\nКаримова;${nigina.phone.replace('+992', '')}\r\n` },
+      ).expect(200);
+
+      expect(dataOf<{ imported: number }>(response).imported).toBe(1);
+    });
+
+    it('422 перечисляет номера плохих строк и не зачисляет никого', async () => {
+      const { group, nigina } = scene();
+
+      const csv = ['Телефон', nigina.phone, 'не телефон', '+992985550199'].join('\n');
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv },
+      ).expect(422);
+
+      expect(response.body.error.details).toMatchObject({
+        errors: 2,
+        rows: [
+          { line: 3, reason: 'Телефон не распознан' },
+          { line: 4, reason: 'Студент с таким телефоном не найден' },
+        ],
+      });
+
+      // Ни одна строка файла не применена — включая корректную.
+      const list = await get(
+        `/api/v1/groups/${group.id}/students`,
+        await actor('Permission.Groups.Views'),
+      ).expect(200);
+
+      expect(dataOf<MembershipBody[]>(list)).toHaveLength(0);
+    });
+
+    it('422 на повтор телефона в файле — с номером первой строки', async () => {
+      const { group, nigina } = scene();
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv: `Телефон\n${nigina.phone}\n${nigina.phone}` },
+      ).expect(422);
+
+      expect(response.body.error.details.rows).toEqual([
+        { line: 3, phone: nigina.phone, reason: 'Повтор телефона из строки 2' },
+      ]);
+    });
+
+    it('422 на уже учащегося и на занятого соседней группой того же курса', async () => {
+      const { group, twinGroup, nigina, farrukh } = scene();
+      await send(
+        'post',
+        `/api/v1/groups/${group.id}/students`,
+        await actor('Permission.Groups.ManageStudents'),
+        { studentIds: [nigina.id] },
+      ).expect(201);
+      await send(
+        'post',
+        `/api/v1/groups/${twinGroup.id}/students`,
+        await actor('Permission.Groups.ManageStudents'),
+        { studentIds: [farrukh.id] },
+      ).expect(201);
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv: `Телефон\n${nigina.phone}\n${farrukh.phone}` },
+      ).expect(422);
+
+      expect(response.body.error.details.rows).toEqual(
+        expect.arrayContaining([
+          { line: 2, phone: nigina.phone, reason: 'Уже учится в этой группе' },
+          {
+            line: 3,
+            phone: farrukh.phone,
+            reason: 'Уже учится в другой группе этого курса: Frontend-2',
+          },
+        ]),
+      );
+    });
+
+    it('покинувший группу возвращается импортом', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Ушла в академический отпуск',
+      }).expect(200);
+
+      const response = await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await importer(),
+        { csv: `Телефон\n${nigina.phone}` },
+      ).expect(200);
+
+      expect(dataOf<{ enrolledCount: number; students: MembershipBody[] }>(response)).toMatchObject(
+        { enrolledCount: 1, students: [{ status: GroupStudentStatus.ACTIVE, statusReason: null }] },
+      );
+    });
+
+    it('400 на файл без колонки телефона, без строк данных и на пустое тело', async () => {
+      const { group } = scene();
+      const token = await importer();
+      const url = `/api/v1/groups/${group.id}/students/import`;
+
+      await send('post', url, token, { csv: 'Фамилия,Имя\nКаримова,Нигина' }).expect(400);
+      await send('post', url, token, { csv: 'Телефон' }).expect(400);
+      await send('post', url, token, { csv: '' }).expect(400);
+      await send('post', url, token, {}).expect(400);
+      await send('post', url, token, { csv: 'Телефон\n+992901234567', extra: 1 }).expect(400);
+    });
+
+    it('импорт требует своего права: ManageStudents его не открывает', async () => {
+      const { group, nigina } = scene();
+
+      await send(
+        'post',
+        `/api/v1/groups/${group.id}/students/import`,
+        await actor('Permission.Groups.ManageStudents'),
+        { csv: `Телефон\n${nigina.phone}` },
+      ).expect(403);
+    });
+
+    it('404 на неизвестную группу', async () => {
+      await send('post', `/api/v1/groups/${randomUUID()}/students/import`, await importer(), {
+        csv: '+992901234567',
+      }).expect(404);
+    });
+  });
+
   describe('OpenAPI', () => {
     it('документ описывает маршруты состава и код 201 на зачисление', () => {
       // Документ собирается напрямую: маршрут `/docs/json` монтируется только
@@ -1113,6 +1466,8 @@ describe('Состав группы (e2e, хранилище в памяти)', 
           '/api/v1/groups/{groupId}/students',
           '/api/v1/groups/{groupId}/students/change-status',
           '/api/v1/groups/{groupId}/students/transfer',
+          '/api/v1/groups/{groupId}/students/export',
+          '/api/v1/groups/{groupId}/students/import',
           '/api/v1/groups/{groupId}/students/{studentId}',
         ]),
       );
@@ -1120,6 +1475,18 @@ describe('Состав группы (e2e, хранилище в памяти)', 
       expect(
         Object.keys(document.paths['/api/v1/groups/{groupId}/students']?.post?.responses ?? {}),
       ).toContain('201');
+    });
+
+    it('выгрузка описана как text/csv, а импорт отвечает 200 (ресурс не создаётся)', () => {
+      const document = buildOpenApiDocument(app);
+      const exportPath = document.paths['/api/v1/groups/{groupId}/students/export']?.get;
+      const importPath = document.paths['/api/v1/groups/{groupId}/students/import']?.post;
+      const ok = exportPath?.responses?.['200'] as
+        { content?: Record<string, unknown> } | undefined;
+
+      expect(Object.keys(ok?.content ?? {})).toEqual(['text/csv']);
+      expect(Object.keys(importPath?.responses ?? {})).toContain('200');
+      expect(Object.keys(importPath?.responses ?? {})).not.toContain('201');
     });
   });
 });

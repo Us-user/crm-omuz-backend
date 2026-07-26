@@ -117,6 +117,25 @@ export class GroupStudentsTransferredDto {
   enrolledCount!: number;
 }
 
+/**
+ * Ответ на импорт (ТЗ 5.5). Отдельный от зачисления: там оператор видел список
+ * на экране, здесь — не видел, поэтому нужно назвать, сколько строк файла
+ * дошло до состава.
+ */
+export class GroupStudentsImportedDto {
+  @ApiProperty({ format: 'uuid' })
+  groupId!: string;
+
+  @ApiProperty({ example: 27, description: 'Сколько строк файла зачислено' })
+  imported!: number;
+
+  @ApiProperty({ type: [GroupStudentDto], description: 'Заведённые членства' })
+  students!: GroupStudentDto[];
+
+  @ApiProperty({ example: 27, description: 'Сколько студентов учится в группе после импорта' })
+  enrolledCount!: number;
+}
+
 /** Ответ на исключение из состава — чтобы интерфейс мог назвать убранного. */
 export class GroupStudentRemovedDto {
   @ApiProperty({ format: 'uuid' })

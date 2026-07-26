@@ -44,6 +44,11 @@ export type StudentCandidate = Prisma.StudentGetPayload<{
   select: { id: true; firstName: true; lastName: true };
 }>;
 
+/** Студент, найденный по телефону из файла импорта. */
+export type StudentByPhone = Prisma.StudentGetPayload<{
+  select: { id: true; firstName: true; lastName: true; phone: true };
+}>;
+
 /** Действующее членство в другой группе того же курса — причина отказа (409). */
 export type CompetingMembership = Prisma.GroupStudentGetPayload<{
   select: {
@@ -54,15 +59,26 @@ export type CompetingMembership = Prisma.GroupStudentGetPayload<{
   };
 }>;
 
-export interface GroupStudentListParams {
+/** Отбор состава: общий для постраничного списка и для выгрузки. */
+export interface GroupStudentFilter {
   groupId: string;
   search?: string;
   status?: GroupStudentStatus;
+}
+
+export interface GroupStudentListParams extends GroupStudentFilter {
   sort: GroupStudentSortField;
   order: SortOrder;
   skip: number;
   take: number;
 }
+
+/**
+ * Потолок выгрузки. Состав группы — это десятки строк (`capacity` ограничена
+ * сотней), и запрос, вытягивающий больше, означает не выгрузку карточки,
+ * а попытку выкачать базу одним обращением.
+ */
+export const MAX_EXPORT_ROWS = 5000;
 
 export interface TransferInput {
   fromGroupId: string;
@@ -71,6 +87,23 @@ export interface TransferInput {
   reason: string;
   changedAt: Date;
 }
+
+/** Отбор строк состава — один на постраничный список и на выгрузку. */
+const whereOf = (filter: GroupStudentFilter): Prisma.GroupStudentWhereInput => ({
+  groupId: filter.groupId,
+  ...(filter.status === undefined ? {} : { status: filter.status }),
+  ...(filter.search === undefined
+    ? {}
+    : {
+        student: {
+          OR: [
+            { firstName: { contains: filter.search, mode: 'insensitive' } },
+            { lastName: { contains: filter.search, mode: 'insensitive' } },
+            { phone: { contains: filter.search } },
+          ],
+        },
+      }),
+});
 
 /**
  * Доступ к данным состава группы (`Controller → Service → Repository`).
@@ -83,21 +116,7 @@ export class GroupStudentsRepository {
   async findMany(
     params: GroupStudentListParams,
   ): Promise<{ rows: GroupStudentRow[]; total: number }> {
-    const where: Prisma.GroupStudentWhereInput = {
-      groupId: params.groupId,
-      ...(params.status === undefined ? {} : { status: params.status }),
-      ...(params.search === undefined
-        ? {}
-        : {
-            student: {
-              OR: [
-                { firstName: { contains: params.search, mode: 'insensitive' } },
-                { lastName: { contains: params.search, mode: 'insensitive' } },
-                { phone: { contains: params.search } },
-              ],
-            },
-          }),
-    };
+    const where = whereOf(params);
 
     // Ключ `orderBy` собирается ветвлением, а не из строки: вычисляемое поле
     // прошло бы типизацию Prisma и упало бы уже в БД.
@@ -121,6 +140,36 @@ export class GroupStudentsRepository {
     ]);
 
     return { rows, total };
+  }
+
+  /**
+   * Весь отобранный состав для выгрузки (ТЗ 5.5) — без окна страницы, но
+   * с потолком: файл собирается в памяти, и «выгрузить всё» не должно
+   * означать «прочитать сколько угодно».
+   *
+   * Порядок фиксированный («фамилия, имя»): у файла нет экрана с сортировкой,
+   * а два запуска выгрузки должны давать одинаковые строки в одинаковом
+   * порядке — иначе их нельзя сравнить между собой.
+   */
+  findAllForExport(filter: GroupStudentFilter): Promise<GroupStudentRow[]> {
+    return this.prisma.groupStudent.findMany({
+      where: whereOf(filter),
+      select: GROUP_STUDENT_SELECT,
+      orderBy: [{ student: { lastName: 'asc' } }, { student: { firstName: 'asc' } }],
+      take: MAX_EXPORT_ROWS,
+    });
+  }
+
+  /**
+   * Профили по телефонам из файла импорта. `Student.phone` уникален, поэтому
+   * телефон однозначно указывает на человека — и импорту не нужен ни один
+   * внутренний идентификатор, которого у оператора всё равно нет.
+   */
+  findStudentsByPhones(phones: string[]): Promise<StudentByPhone[]> {
+    return this.prisma.student.findMany({
+      where: { phone: { in: phones } },
+      select: { id: true, firstName: true, lastName: true, phone: true },
+    });
   }
 
   findGroup(id: string): Promise<StudentGroup | null> {

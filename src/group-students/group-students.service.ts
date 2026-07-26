@@ -1,24 +1,61 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { GroupStudentStatus } from '@prisma/client';
 
-import { BusinessRuleException, Paginated } from '../common';
+import { BusinessRuleException, formatCsv, formatIsoDate, Paginated, parseCsv } from '../common';
+import { PhoneService } from '../phone/phone.service';
 import type {
   AddGroupStudentsDto,
   ChangeGroupStudentsStatusDto,
+  ExportGroupStudentsQueryDto,
   GroupStudentDto,
   GroupStudentQueryDto,
   GroupStudentRemovedDto,
   GroupStudentsAddedDto,
+  GroupStudentsImportedDto,
   GroupStudentsStatusChangedDto,
   GroupStudentsTransferredDto,
+  ImportGroupStudentsDto,
   TransferGroupStudentsDto,
 } from './dto';
+import { MAX_IMPORT_ROWS } from './dto';
+import {
+  findPhoneColumn,
+  GROUP_STUDENTS_CSV_HEADER,
+  PHONE_COLUMN_ALIASES,
+  readPhoneCell,
+  toCsvRow,
+} from './group-students.csv';
 import type {
   CompetingMembership,
   GroupStudentRow,
   StudentGroup,
 } from './group-students.repository';
 import { GroupStudentsRepository } from './group-students.repository';
+
+/** Готовый файл выгрузки: контроллеру остаётся проставить заголовки. */
+export interface GroupStudentsCsvFile {
+  content: string;
+  fileName: string;
+  /** Имя без кириллицы — для заголовка `Content-Disposition` старых клиентов. */
+  asciiFileName: string;
+  rows: number;
+}
+
+/** Строка файла, отвергнутая импортом (ТЗ 5.5: отчёт по строкам). */
+interface ImportRowError {
+  line: number;
+  phone: string;
+  reason: string;
+}
+
+/** Сколько отвергнутых строк перечисляется в ответе. */
+const MAX_REPORTED_ERRORS = 50;
 
 /**
  * Состав группы (ТЗ 5.5: «состав студентов», массовые «Change status» и «Transfer»).
@@ -40,7 +77,10 @@ import { GroupStudentsRepository } from './group-students.repository';
 export class GroupStudentsService {
   private readonly logger = new Logger(GroupStudentsService.name);
 
-  constructor(private readonly repository: GroupStudentsRepository) {}
+  constructor(
+    private readonly repository: GroupStudentsRepository,
+    private readonly phones: PhoneService,
+  ) {}
 
   async findAll(groupId: string, query: GroupStudentQueryDto): Promise<Paginated<GroupStudentDto>> {
     await this.requireGroup(groupId);
@@ -174,6 +214,69 @@ export class GroupStudentsService {
   }
 
   /**
+   * Выгрузка состава в CSV (ТЗ 5.5: «Import/Export»).
+   *
+   * Выгружается **весь** отобранный состав, а не страница: файл из двадцати
+   * строк не является выгрузкой группы. Закрытые членства из файла не пропадают
+   * по той же причине, что и из списка, — состав группы это её история;
+   * фильтр `status=LEFT` даёт секцию «Left course» из ТЗ 5.5 отдельным файлом.
+   */
+  async exportCsv(
+    groupId: string,
+    query: ExportGroupStudentsQueryDto,
+  ): Promise<GroupStudentsCsvFile> {
+    const group = await this.requireGroup(groupId);
+
+    const rows = await this.repository.findAllForExport({
+      groupId,
+      status: query.status,
+      search: query.search,
+    });
+
+    const content = formatCsv([GROUP_STUDENTS_CSV_HEADER, ...rows.map(toCsvRow)], { bom: true });
+    const date = formatIsoDate(new Date());
+
+    this.logger.log(`Выгружен состав группы ${group.name}: строк ${String(rows.length)}`);
+
+    return {
+      content,
+      fileName: `Состав группы ${group.name} ${date}.csv`,
+      asciiFileName: `group-students-${date}.csv`,
+      rows: rows.length,
+    };
+  }
+
+  /**
+   * Импорт состава из CSV (ТЗ 5.5).
+   *
+   * Файл только **зачисляет уже заведённых** студентов: связь ищется
+   * по телефону (`Student.phone` уникален). Создавать профили импорт
+   * не умеет — это карточка студента из Фазы 4 со своей валидацией всех
+   * полей формы (ТЗ 5.3), и делать её боком, через CSV, значило бы завести
+   * второй, менее строгий способ заводить людей.
+   *
+   * Проверяется весь файл целиком, и при первой же ошибочной строке
+   * не применяется ничего (решение сессии 0013): импорт из десяти строк,
+   * применившийся на семь, оставляет оператора с вопросом, какие семь, —
+   * а поправить и повторить файл он может только целиком.
+   */
+  async importCsv(groupId: string, dto: ImportGroupStudentsDto): Promise<GroupStudentsImportedDto> {
+    const group = await this.requireGroup(groupId);
+
+    const studentIds = await this.readImportFile(group, dto.csv);
+
+    const students = await this.repository.enroll(groupId, studentIds, new Date());
+    const enrolledCount = await this.repository.countActive(groupId);
+
+    this.logger.log(
+      `Импорт в группу ${group.name}: зачислено ${String(students.length)} ` +
+        `(в составе ${String(enrolledCount)})`,
+    );
+
+    return { groupId, imported: students.length, students: students.map(toDto), enrolledCount };
+  }
+
+  /**
    * Исключение из состава — строка удаляется целиком, вместе с историей.
    * Маршрута нет в перечне ТЗ 5.5, но без него зачисленного по ошибке студента
    * пришлось бы «увольнять» причиной ухода, и он навсегда остался бы в отчёте
@@ -188,6 +291,152 @@ export class GroupStudentsService {
     this.logger.log(`Студент ${fullName(membership.student)} убран из состава группы ${groupId}`);
 
     return { groupId, studentId, fullName: fullName(membership.student), enrolledCount };
+  }
+
+  // ──────────────────────────────── Импорт ──────────────────────────────────
+
+  /**
+   * Разбирает файл и превращает его в список профилей для зачисления.
+   *
+   * Ошибки не прерывают разбор, а копятся: оператор должен увидеть **все**
+   * плохие строки за один заход, иначе исправление файла превращается
+   * в перебор — поправил четвёртую строку, узнал про девятую.
+   */
+  private async readImportFile(group: StudentGroup, csv: string): Promise<string[]> {
+    const records = parseCsv(csv);
+    const header = records[0];
+
+    if (header === undefined) {
+      throw new BadRequestException({
+        message: 'Файл пуст',
+        details: { csv: 'Ожидается строка заголовка и хотя бы одна строка с телефоном' },
+      });
+    }
+
+    const phoneColumn = findPhoneColumn(header.values);
+    if (phoneColumn === -1) {
+      throw new BadRequestException({
+        message: 'В заголовке файла не найдена колонка с телефоном',
+        details: {
+          expected: [...PHONE_COLUMN_ALIASES],
+          received: header.values,
+        },
+      });
+    }
+
+    const dataRows = records.slice(1);
+    if (dataRows.length === 0) {
+      throw new BadRequestException({
+        message: 'Файл не содержит ни одной строки с данными',
+        details: { csv: 'После заголовка ожидается хотя бы один телефон' },
+      });
+    }
+    if (dataRows.length > MAX_IMPORT_ROWS) {
+      throw new BadRequestException({
+        message: `Слишком много строк: максимум ${String(MAX_IMPORT_ROWS)}`,
+        details: { rows: dataRows.length },
+      });
+    }
+
+    const errors: ImportRowError[] = [];
+    /** Телефон → строка файла, в которой он встретился впервые. */
+    const seen = new Map<string, number>();
+    const candidates: { line: number; phone: string }[] = [];
+
+    for (const record of dataRows) {
+      const raw = readPhoneCell(record.values[phoneColumn]);
+
+      if (raw === '') {
+        errors.push({ line: record.line, phone: '', reason: 'Телефон не указан' });
+        continue;
+      }
+
+      let phone: string;
+      try {
+        phone = this.phones.normalize(raw);
+      } catch {
+        // Номер разбирается теми же правилами, что и везде (ТЗ 3.1): файл
+        // с локальным «901234567» должен ложиться на E.164 из базы.
+        errors.push({ line: record.line, phone: raw, reason: 'Телефон не распознан' });
+        continue;
+      }
+
+      const firstLine = seen.get(phone);
+      if (firstLine !== undefined) {
+        errors.push({
+          line: record.line,
+          phone,
+          reason: `Повтор телефона из строки ${String(firstLine)}`,
+        });
+        continue;
+      }
+
+      seen.set(phone, record.line);
+      candidates.push({ line: record.line, phone });
+    }
+
+    const found = await this.repository.findStudentsByPhones(candidates.map((row) => row.phone));
+    const byPhone = new Map(found.map((student) => [student.phone, student]));
+
+    const resolved: { line: number; phone: string; studentId: string }[] = [];
+    for (const candidate of candidates) {
+      const student = byPhone.get(candidate.phone);
+      if (student === undefined) {
+        errors.push({ ...candidate, reason: 'Студент с таким телефоном не найден' });
+        continue;
+      }
+      resolved.push({ ...candidate, studentId: student.id });
+    }
+
+    await this.collectMembershipErrors(group, resolved, errors);
+
+    if (errors.length > 0) {
+      throw new BusinessRuleException('Импорт отклонён: файл содержит ошибки', {
+        // Число ошибок отдаётся отдельно от списка: перечислять пятьсот строк
+        // в теле ответа бессмысленно, а знать, что их пятьсот, — нужно.
+        errors: errors.length,
+        rows: errors.sort((a, b) => a.line - b.line).slice(0, MAX_REPORTED_ERRORS),
+      });
+    }
+
+    return resolved.map((row) => row.studentId);
+  }
+
+  /**
+   * Те же два правила состава, что и при обычном зачислении, но привязанные
+   * к строкам файла: «уже в составе» и «одно действующее членство на курс».
+   * Без них импорт был бы дырой в правилах, которые держит `POST …/students`.
+   */
+  private async collectMembershipErrors(
+    group: StudentGroup,
+    resolved: { line: number; phone: string; studentId: string }[],
+    errors: ImportRowError[],
+  ): Promise<void> {
+    if (resolved.length === 0) return;
+
+    const studentIds = resolved.map((row) => row.studentId);
+    const lineOf = new Map(resolved.map((row) => [row.studentId, row]));
+
+    const memberships = await this.repository.findMemberships(group.id, studentIds);
+    for (const membership of memberships) {
+      if (membership.status !== GroupStudentStatus.ACTIVE) continue;
+      const row = lineOf.get(membership.studentId);
+      if (row === undefined) continue;
+      errors.push({ line: row.line, phone: row.phone, reason: 'Уже учится в этой группе' });
+    }
+
+    const competing = await this.repository.findCompetingMemberships(group.courseId, studentIds, [
+      group.id,
+    ]);
+    for (const membership of competing) {
+      const row = lineOf.get(membership.studentId);
+      if (row === undefined) continue;
+      errors.push({
+        line: row.line,
+        phone: row.phone,
+        reason: `Уже учится в другой группе этого курса: ${membership.group.name}`,
+      });
+    }
   }
 
   // ──────────────────────────────── Правила ─────────────────────────────────
