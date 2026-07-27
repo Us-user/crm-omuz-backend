@@ -233,7 +233,16 @@
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
-**Проверено в CI после пуша** (см. раздел «Коммит»).
+**Проверено в CI после пуша** (run `30256901280`, коммит `bfbea90`, зелёный за 1м55с):
+- `npm test` — 777 тестов, 43 набора;
+- `npm run test:e2e` целиком — **19 наборов, 532 теста** (было 18 и 508), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + **Performance** + Branches + Rooms + Courses + Groups + GroupJournal +
+  GroupMentors + GroupSchedule + GroupStudents + Syllabus) против настоящих PostgreSQL
+  и Redis: приложение с новым модулем поднимается и подтверждает `database: up`;
+- `npx prisma migrate deploy` — все **четырнадцать** прежних миграций применены
+  к реальному PostgreSQL 16 (новых в этой сессии не было).
 
 **НЕ проверено (честно):**
 - **Ни один из новых Prisma-запросов на настоящей БД не выполнялся, и миграции
@@ -306,5 +315,8 @@ server`) — известное состояние окружения с сес�
 
 ## Коммит
 
-- `<хеш>` — «Фаза 5: общий балл, рейтинг, корона и категории активности».
+- `bfbea90` — «Фаза 5: общий балл, рейтинг, корона и категории активности»
+  (26 файлов, +3309 −24).
+- На `bfbea90` прогнан зелёный CI (run `30256901280`).
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
