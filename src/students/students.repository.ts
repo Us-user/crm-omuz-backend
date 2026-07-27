@@ -141,7 +141,14 @@ export type StudentDeletionCheck = Prisma.StudentGetPayload<{
     lastName: true;
     accountId: true;
     promotedEmployee: { select: { id: true } };
-    _count: { select: { groups: true; journalEntries: true; coinTransactions: true } };
+    _count: {
+      select: {
+        groups: true;
+        journalEntries: true;
+        coinTransactions: true;
+        monthlyWins: true;
+      };
+    };
   };
 }>;
 
@@ -326,7 +333,18 @@ export class StudentsRepository {
         lastName: true,
         accountId: true,
         promotedEmployee: { select: { id: true } },
-        _count: { select: { groups: true, journalEntries: true, coinTransactions: true } },
+        _count: {
+          select: {
+            groups: true,
+            journalEntries: true,
+            coinTransactions: true,
+            // Победы в месячном рейтинге держат профиль так же, как журнал
+            // и коины: снимок месяца не должен меняться задним числом
+            // (внешний ключ и так стоит `RESTRICT`, но причину отказа
+            // наружу должен называть сервис, а не ошибка связи).
+            monthlyWins: true,
+          },
+        },
       },
     });
   }

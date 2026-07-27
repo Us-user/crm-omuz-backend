@@ -40,3 +40,16 @@ export function parseIsoMonth(value: string, field: string): Date {
  * (то же соображение, что у `formatIsoDate` про время).
  */
 export const formatIsoMonth = (month: Date): string => month.toISOString().slice(0, 7);
+
+/**
+ * Первое число **следующего** месяца — правая, не включающая граница отрезка.
+ *
+ * Нужна там, где отбираются записи «за месяц» по обычной дате: недели журнала
+ * лежат в `startDate` (`@db.Date`), и условие `gte: месяц, lt: следующий`
+ * не зависит от того, сколько в месяце дней. Считать `lte: последний день`
+ * значило бы выводить это число самому — 28, 29, 30 или 31.
+ *
+ * `Date.UTC` переносит год сам: декабрь + 1 = январь следующего года.
+ */
+export const nextIsoMonth = (month: Date): Date =>
+  new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1));

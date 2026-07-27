@@ -233,6 +233,7 @@ class InMemoryStudentsStore {
         groups: student._count.groups,
         journalEntries: 0,
         coinTransactions: 0,
+        monthlyWins: 0,
       },
     });
   }

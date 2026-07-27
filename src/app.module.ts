@@ -14,6 +14,7 @@ import { GroupScheduleModule } from './group-schedule/group-schedule.module';
 import { GroupStudentsModule } from './group-students/group-students.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
+import { LeadersModule } from './leaders/leaders.module';
 import { LoggerModule } from './logger/logger.module';
 import { MailerModule } from './mailer/mailer.module';
 import { MentorCabinetModule } from './mentor-cabinet/mentor-cabinet.module';
@@ -53,6 +54,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentFeedbackModule,
     StudentParentsModule,
     PerformanceModule,
+    LeadersModule,
     EmployeesModule,
     MentorCabinetModule,
     MentorLevelsModule,
