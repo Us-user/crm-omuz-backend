@@ -234,6 +234,7 @@ class InMemoryStudentsStore {
         journalEntries: 0,
         coinTransactions: 0,
         monthlyWins: 0,
+        graduations: 0,
       },
     });
   }

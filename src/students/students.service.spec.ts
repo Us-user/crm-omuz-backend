@@ -64,7 +64,7 @@ const deletable = (overrides: Partial<StudentDeletionCheck> = {}): StudentDeleti
   lastName: 'Каримова',
   accountId: null,
   promotedEmployee: null,
-  _count: { groups: 0, journalEntries: 0, coinTransactions: 0, monthlyWins: 0 },
+  _count: { groups: 0, journalEntries: 0, coinTransactions: 0, monthlyWins: 0, graduations: 0 },
   ...overrides,
 });
 
@@ -518,7 +518,13 @@ describe('StudentsService', () => {
     it('409 на студента с учебной историей — с числом членств', async () => {
       repository.findForDeletion.mockResolvedValue(
         deletable({
-          _count: { groups: 3, journalEntries: 0, coinTransactions: 0, monthlyWins: 0 },
+          _count: {
+            groups: 3,
+            journalEntries: 0,
+            coinTransactions: 0,
+            monthlyWins: 0,
+            graduations: 0,
+          },
         }),
       );
 
@@ -532,7 +538,13 @@ describe('StudentsService', () => {
     it('409 на студента, попавшего в снимок месяца', async () => {
       repository.findForDeletion.mockResolvedValue(
         deletable({
-          _count: { groups: 0, journalEntries: 0, coinTransactions: 0, monthlyWins: 2 },
+          _count: {
+            groups: 0,
+            journalEntries: 0,
+            coinTransactions: 0,
+            monthlyWins: 2,
+            graduations: 0,
+          },
         }),
       );
 
@@ -545,7 +557,13 @@ describe('StudentsService', () => {
       // забывать нельзя — на ней держится отчёт по оттоку (ТЗ 5.12).
       repository.findForDeletion.mockResolvedValue(
         deletable({
-          _count: { groups: 1, journalEntries: 0, coinTransactions: 0, monthlyWins: 0 },
+          _count: {
+            groups: 1,
+            journalEntries: 0,
+            coinTransactions: 0,
+            monthlyWins: 0,
+            graduations: 0,
+          },
         }),
       );
 

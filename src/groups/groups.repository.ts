@@ -216,6 +216,19 @@ export class GroupsRepository {
     return this.prisma.groupStudent.count({ where: { groupId } });
   }
 
+  /**
+   * Сколько выпускников выпущено из группы (ТЗ 5.11). Внешний ключ стоит
+   * `RESTRICT` и так не пустит удаление, но наружу должна уходить причина,
+   * а не обезличенная ошибка связи.
+   *
+   * Отдельно от членств не для симметрии: строку членства можно убрать
+   * из состава (`DELETE …/students/{id}`, сессия 0012), и тогда группа
+   * без единого членства всё ещё будет группой, из которой кто-то выпустился.
+   */
+  countGraduates(groupId: string): Promise<number> {
+    return this.prisma.graduate.count({ where: { groupId } });
+  }
+
   create(input: GroupWriteInput): Promise<GroupRow> {
     return this.prisma.group.create({ data: input, select: GROUP_SELECT });
   }

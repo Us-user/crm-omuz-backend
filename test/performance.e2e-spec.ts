@@ -22,6 +22,7 @@ import { AllExceptionsFilter, TransformResponseInterceptor } from 'src/common';
 import { AppConfigModule } from 'src/config/config.module';
 import type { GroupActivityRows, GroupListParams, GroupRow } from 'src/groups/groups.repository';
 import { GroupsRepository } from 'src/groups/groups.repository';
+import { GraduatesRepository } from 'src/graduates/graduates.repository';
 import { GroupsModule } from 'src/groups/groups.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
@@ -493,6 +494,12 @@ describe('Успеваемость, категории и корона (e2e, х�
         findMany: (params: GroupListParams) => store.findGroups(params),
         findById: (id: string) => store.findGroupById(id),
         findActivity: (ids: string[]) => store.findActivity(ids),
+      })
+      .overrideProvider(GraduatesRepository)
+      .useValue({
+        // `GroupsModule` импортирует `GraduatesModule` ради автовыпуска (ТЗ 5.11);
+        // здесь группы не закрываются — выпуск проверяет `graduates.e2e-spec.ts`.
+        findGroupForGraduation: () => Promise.resolve(null),
       })
       .compile();
 

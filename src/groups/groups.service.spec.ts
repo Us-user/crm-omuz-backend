@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import { DurationUnit, GroupFormat, GroupStatus } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
+import type { GraduatesService } from '../graduates/graduates.service';
 import { GroupQueryDto, GroupSortField } from './dto';
 import type { GroupActivityRows, GroupRow, GroupsRepository } from './groups.repository';
 import { GroupsService } from './groups.service';
@@ -55,12 +56,14 @@ describe('GroupsService', () => {
       | 'findCourse'
       | 'countScheduleSlotsWithRoom'
       | 'countStudents'
+      | 'countGraduates'
       | 'findActivity'
       | 'create'
       | 'update'
       | 'delete'
     >
   >;
+  let graduates: jest.Mocked<Pick<GraduatesService, 'graduateGroup'>>;
   let service: GroupsService;
 
   beforeEach(() => {
@@ -72,13 +75,19 @@ describe('GroupsService', () => {
       findCourse: jest.fn().mockResolvedValue({ id: COURSE_ID, title: 'Frontend Basic' }),
       countScheduleSlotsWithRoom: jest.fn().mockResolvedValue(0),
       countStudents: jest.fn().mockResolvedValue(0),
+      countGraduates: jest.fn().mockResolvedValue(0),
       findActivity: jest.fn().mockResolvedValue({ members: [], results: [] }),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
     };
 
-    service = new GroupsService(repository as unknown as GroupsRepository);
+    graduates = { graduateGroup: jest.fn().mockResolvedValue(null) };
+
+    service = new GroupsService(
+      repository as unknown as GroupsRepository,
+      graduates as unknown as GraduatesService,
+    );
   });
 
   describe('Список и карточка', () => {
@@ -438,6 +447,68 @@ describe('GroupsService', () => {
 
       await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(ConflictException);
       expect(repository.countStudents).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('409 на группу с выпускниками — вместе с ней исчезли бы сертификаты', async () => {
+      repository.countGraduates.mockResolvedValue(4);
+
+      await expect(service.remove(GROUP_ID)).rejects.toMatchObject({
+        response: { message: expect.stringContaining('(4)') },
+      });
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('выпускники проверяются отдельно от состава: разобранный состав группу не освобождает', async () => {
+      repository.countStudents.mockResolvedValue(0);
+      repository.countGraduates.mockResolvedValue(1);
+
+      await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(ConflictException);
+      expect(repository.countGraduates).toHaveBeenCalledWith(GROUP_ID);
+    });
+  });
+
+  describe('Автовыпуск (ТЗ 5.11)', () => {
+    it('перевод группы в FINISHED запускает выпуск', async () => {
+      repository.update.mockResolvedValue(row({ status: GroupStatus.FINISHED }));
+
+      await service.update(GROUP_ID, { status: GroupStatus.FINISHED });
+
+      expect(graduates.graduateGroup).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('правка группы, оставшейся не завершённой, выпуск не запускает', async () => {
+      repository.update.mockResolvedValue(row({ status: GroupStatus.ACTIVE }));
+
+      await service.update(GROUP_ID, { name: 'Frontend-2' });
+
+      expect(graduates.graduateGroup).not.toHaveBeenCalled();
+    });
+
+    it('решение «последний ли это курс» принимает модуль выпускников, а не группы', async () => {
+      // У строки `isLastCourse: false`, но группы всё равно сообщают о событии:
+      // правило живёт в `GraduatesService` и проверяется там.
+      repository.update.mockResolvedValue(row({ status: GroupStatus.FINISHED }));
+
+      await service.update(GROUP_ID, { status: GroupStatus.FINISHED });
+
+      expect(graduates.graduateGroup).toHaveBeenCalledTimes(1);
+    });
+
+    it('сохранение уже завершённой группы вызывает выпуск повторно — он идемпотентен', async () => {
+      repository.findById.mockResolvedValue(row({ status: GroupStatus.FINISHED }));
+      repository.update.mockResolvedValue(row({ status: GroupStatus.FINISHED }));
+
+      await service.update(GROUP_ID, { description: 'Выпуск 2026' });
+
+      expect(graduates.graduateGroup).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('создание группы выпуск не запускает: состава у неё ещё нет', async () => {
+      repository.create.mockResolvedValue(row({ status: GroupStatus.FINISHED }));
+
+      await service.create({ ...validBody, status: GroupStatus.FINISHED });
+
+      expect(graduates.graduateGroup).not.toHaveBeenCalled();
     });
   });
 

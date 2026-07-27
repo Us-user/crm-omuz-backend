@@ -12,6 +12,7 @@ import { GroupJournalModule } from './group-journal/group-journal.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
 import { GroupScheduleModule } from './group-schedule/group-schedule.module';
 import { GroupStudentsModule } from './group-students/group-students.module';
+import { GraduatesModule } from './graduates/graduates.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LeadersModule } from './leaders/leaders.module';
@@ -57,6 +58,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     PerformanceModule,
     LeadersModule,
     LeftCoursesModule,
+    GraduatesModule,
     EmployeesModule,
     MentorCabinetModule,
     MentorLevelsModule,

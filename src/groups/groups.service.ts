@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { GroupStatus } from '@prisma/client';
+
 import {
   BusinessRuleException,
   emptyToNull,
@@ -14,6 +16,7 @@ import {
   Paginated,
   parseIsoDate,
 } from '../common';
+import { GraduatesService } from '../graduates/graduates.service';
 // Прямым путём, а не через barrel: нужны только чистые функции правила
 // (правило сессии 0007).
 import type { ActivityCategoryCounts } from '../performance/performance';
@@ -58,7 +61,10 @@ const emptyActivity = (): GroupActivity => ({ counts: countByCategory([]), passi
 export class GroupsService {
   private readonly logger = new Logger(GroupsService.name);
 
-  constructor(private readonly repository: GroupsRepository) {}
+  constructor(
+    private readonly repository: GroupsRepository,
+    private readonly graduates: GraduatesService,
+  ) {}
 
   async findAll(query: GroupQueryDto): Promise<Paginated<GroupDto>> {
     const { rows, total } = await this.repository.findMany({
@@ -176,9 +182,44 @@ export class GroupsService {
 
     this.logger.log(`Изменена группа ${group.name} (${group.id})`);
 
+    await this.graduateIfFinished(group.id, group.status);
+
     const activity = await this.activityOf([group.id]);
 
     return toDto(group, activity.get(group.id) ?? emptyActivity());
+  }
+
+  /**
+   * Автовыпуск (ТЗ 5.11: «автовыпуск при завершении срока группы курса
+   * с флагом Is last course»).
+   *
+   * Событием выбрана **смена статуса группы на `FINISHED`**, а не наступление
+   * `endDate` (решение пользователя, сессия 0026): фоновой задачи для этого
+   * не нужно, а работающих в проекте нет ни одной до Фазы 11. Само правило
+   * («последний ли это курс», «кого выпускать», «какой у него балл») живёт
+   * в `GraduatesService` — группы лишь сообщают о событии.
+   *
+   * Проверяется **итоговое** состояние, а не переход: повторное сохранение
+   * завершённой группы безвредно (студент выпускается из группы ровно один раз,
+   * это держит уникальный индекс), зато сохранение группы, закрытой до
+   * появления автовыпуска, доводит дело до конца. Тем же свойством операция
+   * становится восстановимой — приём сессии 0014 с пересчётом статусов.
+   *
+   * Выпуск идёт **после** правки группы, а не в её транзакции: иначе правило
+   * предметной области уехало бы в слой данных, а его вызов остался бы
+   * непроверяемым (репозитории в проекте подменены в e2e). Цена честная и
+   * названа в логе сессии: сбой между шагами оставит группу завершённой без
+   * выпускников, и чинится это повторным сохранением.
+   */
+  private async graduateIfFinished(groupId: string, status: GroupStatus): Promise<void> {
+    if (status !== GroupStatus.FINISHED) return;
+
+    const result = await this.graduates.graduateGroup(groupId);
+    if (result === null || result.graduated === 0) return;
+
+    this.logger.log(
+      `Автовыпуск группы ${groupId}: выпускников ${String(result.graduated)} (ТЗ 5.11)`,
+    );
   }
 
   /**
@@ -194,6 +235,7 @@ export class GroupsService {
   async remove(id: string): Promise<GroupDeletedDto> {
     const group = await this.require(id);
     await this.assertNoStudents(id);
+    await this.assertNoGraduates(id);
 
     await this.repository.delete(id);
     this.logger.log(`Удалена группа ${group.name} (${id})`);
@@ -295,6 +337,25 @@ export class GroupsService {
     throw new ConflictException(
       `В составе группы есть студенты (${String(students)}) — уберите их из состава ` +
         'перед удалением: вместе с группой исчезла бы их учебная история',
+    );
+  }
+
+  /**
+   * Группу, из которой кто-то выпустился, удалить нельзя (ТЗ 5.11).
+   *
+   * Внешний ключ у `Graduate.groupId` стоит `RESTRICT`, то есть БД такое
+   * удаление и так не пропустит, — проверка нужна ради причины в ответе,
+   * а не ради целостности (то же соображение, что у ступени ментора
+   * с проставленными месяцами, 0021). Отдельно от состава: членство можно
+   * убрать из группы руками, а выпуск и выданный по нему сертификат остаются.
+   */
+  private async assertNoGraduates(groupId: string): Promise<void> {
+    const graduates = await this.repository.countGraduates(groupId);
+    if (graduates === 0) return;
+
+    throw new ConflictException(
+      `Из группы выпустились студенты (${String(graduates)}) — вместе с ней исчезли бы ` +
+        'записи о выпуске и выданные сертификаты',
     );
   }
 }

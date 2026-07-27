@@ -28,6 +28,7 @@ import { AppConfigModule } from 'src/config/config.module';
 import { CoursesModule } from 'src/courses/courses.module';
 import { CoursesRepository } from 'src/courses/courses.repository';
 import type { CourseListParams, CourseRow, CourseWriteInput } from 'src/courses/courses.repository';
+import { GraduatesRepository } from 'src/graduates/graduates.repository';
 import { GroupsModule } from 'src/groups/groups.module';
 import { GroupsRepository } from 'src/groups/groups.repository';
 import type { GroupListParams, GroupRow, GroupWriteInput } from 'src/groups/groups.repository';
@@ -681,12 +682,22 @@ describe('Справочники учебного контура (e2e, хран�
         // в аудиториях, и это проверяет `group-schedule.e2e-spec.ts`.
         countScheduleSlotsWithRoom: () => Promise.resolve(0),
         countStudents: (id: string) => store.countGroupStudents(id),
+        // Выпускников в этом наборе нет — их и автовыпуск (ТЗ 5.11) проверяет
+        // `graduates.e2e-spec.ts`, где живут журнал, состав и записи выпуска.
+        countGraduates: () => Promise.resolve(0),
         // Журнала в этом наборе нет, поэтому счётчики категорий выходят
         // нулевыми: их проверяет `performance.e2e-spec.ts`, где есть недели.
         findActivity: () => Promise.resolve({ members: [], results: [] }),
         create: (input: GroupWriteInput) => store.createGroup(input),
         update: (id: string, input: Partial<GroupWriteInput>) => store.updateGroup(id, input),
         delete: (id: string) => store.deleteGroup(id),
+      })
+      .overrideProvider(GraduatesRepository)
+      .useValue({
+        // `GroupsModule` импортирует `GraduatesModule` ради автовыпуска.
+        // Здесь он всегда «нечего выпускать»: группы этого набора живут
+        // без состава и без журнала.
+        findGroupForGraduation: () => Promise.resolve(null),
       })
       .compile();
 

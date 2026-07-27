@@ -147,6 +147,7 @@ export type StudentDeletionCheck = Prisma.StudentGetPayload<{
         journalEntries: true;
         coinTransactions: true;
         monthlyWins: true;
+        graduations: true;
       };
     };
   };
@@ -343,6 +344,9 @@ export class StudentsRepository {
             // (внешний ключ и так стоит `RESTRICT`, но причину отказа
             // наружу должен называть сервис, а не ошибка связи).
             monthlyWins: true,
+            // Выпуски (ТЗ 5.11) — по той же причине: вместе с профилем исчезли
+            // бы факт окончания курса и выданный сертификат.
+            graduations: true,
           },
         },
       },

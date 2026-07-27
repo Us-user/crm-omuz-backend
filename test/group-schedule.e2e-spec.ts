@@ -30,6 +30,7 @@ import type {
   SlotConflictRow,
   SlotGroup,
 } from 'src/group-schedule/group-schedule.repository';
+import { GraduatesRepository } from 'src/graduates/graduates.repository';
 import { GroupsModule } from 'src/groups/groups.module';
 import type { GroupRow } from 'src/groups/groups.repository';
 import { GroupsRepository } from 'src/groups/groups.repository';
@@ -462,6 +463,12 @@ describe('Расписание группы (e2e, хранилище в памя
         // проверяет `performance.e2e-spec.ts`, где живут недели и их итоги.
         findActivity: () => Promise.resolve({ members: [], results: [] }),
         update: (id: string) => store.findGroupAsRow(id),
+      })
+      .overrideProvider(GraduatesRepository)
+      .useValue({
+        // `GroupsModule` импортирует `GraduatesModule` ради автовыпуска (ТЗ 5.11);
+        // здесь выпускать нечего — его проверяет `graduates.e2e-spec.ts`.
+        findGroupForGraduation: () => Promise.resolve(null),
       })
       .compile();
 

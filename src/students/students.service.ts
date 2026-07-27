@@ -283,6 +283,7 @@ export class StudentsService {
       ['отметки в журнале', student._count.journalEntries],
       ['начисления коинов', student._count.coinTransactions],
       ['победы в рейтинге месяца', student._count.monthlyWins],
+      ['выпуски с курсов', student._count.graduations],
     ].filter(([, count]) => (count as number) > 0);
 
     if (held.length > 0) {
