@@ -5,6 +5,7 @@ import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import {
   AccountType,
+  AttendanceMark,
   Gender,
   GroupFormat,
   GroupMentorRole,
@@ -24,7 +25,17 @@ import { AllExceptionsFilter, SortOrder, TransformResponseInterceptor } from 'sr
 import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
+import { ActivityCategory } from 'src/performance/performance';
+import type {
+  AttendanceTally,
+  RankedAverage,
+  StudentMembershipRow,
+  StudentWeekResultRow,
+} from 'src/performance/performance.repository';
+import { PerformanceRepository } from 'src/performance/performance.repository';
 import { PhoneModule } from 'src/phone/phone.module';
+import { RbacModule } from 'src/rbac/rbac.module';
+import { RbacRepository } from 'src/rbac/rbac.repository';
 import { MeGroupSortField, MeScheduleSortField } from 'src/student-cabinet/dto';
 import { StudentCabinetModule } from 'src/student-cabinet/student-cabinet.module';
 import type {
@@ -47,6 +58,60 @@ type StoredGroup = MeMembershipRow['group'];
 type StoredMembership = MeMembershipRow & { studentId: string };
 type StoredSlot = MeSlotRow & { groupId: string };
 
+/** Неделя журнала: в общий балл идут только финализированные (решение сессии 0019). */
+interface StoredWeek {
+  id: string;
+  groupId: string;
+  weekNumber: number;
+  startDate: Date;
+  submittedAt: Date | null;
+}
+
+interface StoredResult {
+  weekId: string;
+  studentId: string;
+  bonus: number;
+  exam: number;
+  sum: number;
+}
+
+/**
+ * Права аккаунта в памяти вместо трёх таблиц RBAC (как в остальных наборах).
+ *
+ * Кабинету они не нужны — у студента прав нет по определению (ТЗ 3.2). Но вместе
+ * с `PerformanceModule` в приложение приезжает и его контроллер
+ * `GET /students/{id}/performance`, а тот закрыт правом каталога: без `RbacModule`
+ * приложение просто не собралось бы. Заодно это даёт то, ради чего кабинет
+ * и переиспользует расчёт, — возможность сравнить оба ответа в одном наборе.
+ */
+class InMemoryRbacRepository {
+  private readonly codesByAccount = new Map<string, string[]>();
+
+  grant(accountId: string, codes: string[]): void {
+    this.codesByAccount.set(accountId, codes);
+  }
+
+  findAccountPermissionCodes(accountId: string): Promise<{ code: string }[]> {
+    return Promise.resolve((this.codesByAccount.get(accountId) ?? []).map((code) => ({ code })));
+  }
+
+  findAllPermissions(): Promise<[]> {
+    return Promise.resolve([]);
+  }
+
+  createPermissions(): Promise<number> {
+    return Promise.resolve(0);
+  }
+
+  updatePermission(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  syncSystemPosition(): Promise<number> {
+    return Promise.resolve(0);
+  }
+}
+
 interface StudentSeed {
   accountId?: string;
   status?: StudentStatus;
@@ -55,16 +120,24 @@ interface StudentSeed {
 }
 
 /**
- * Студенты, их членства, группы и занятия вместе.
+ * Студенты, их членства, группы, занятия, недели журнала и итоги — вместе.
  *
- * Иначе главное свойство кабинета проверить нечем: расписание отбирается
- * **через действующие членства**, а не по списку групп, и несогласованные
- * заглушки показали бы не то поведение, которое даёт БД.
+ * Иначе главные свойства кабинета проверить нечем: расписание отбирается
+ * **через действующие членства**, а не по списку групп, а балл — через
+ * финализированные недели тех же групп. Несогласованные заглушки показали бы
+ * не то поведение, которое даёт БД.
+ *
+ * Один и тот же объект подставляется и на `StudentCabinetRepository`,
+ * и на `PerformanceRepository`: два хранилища могли бы разойтись ровно в том,
+ * ради чего кабинет и переиспользует расчёт.
  */
 class InMemoryCabinetStore {
   readonly studentsByAccount = new Map<string, MeProfileRow>();
   readonly memberships: StoredMembership[] = [];
   readonly slots: StoredSlot[] = [];
+  readonly weeks = new Map<string, StoredWeek>();
+  readonly results: StoredResult[] = [];
+  readonly marks: { studentId: string; attendance: AttendanceMark }[] = [];
 
   addStudent(seed: StudentSeed = {}): { id: string; accountId: string } {
     const accountId = seed.accountId ?? randomUUID();
@@ -174,6 +247,30 @@ class InMemoryCabinetStore {
     return row;
   }
 
+  /** Неделя журнала группы; `submitted: false` — открытая, в общий балл не идёт. */
+  addWeek(group: StoredGroup, weekNumber: number, submitted = true): StoredWeek {
+    const week: StoredWeek = {
+      id: randomUUID(),
+      groupId: group.id,
+      weekNumber,
+      startDate: new Date(Date.UTC(2026, 8, weekNumber)),
+      submittedAt: submitted ? new Date('2026-09-14T09:00:00.000Z') : null,
+    };
+    this.weeks.set(week.id, week);
+
+    return week;
+  }
+
+  addResult(week: StoredWeek, studentId: string, sum: number, bonus = 0, exam = 0): void {
+    this.results.push({ weekId: week.id, studentId, bonus, exam, sum });
+  }
+
+  addMarks(studentId: string, attendance: AttendanceMark, times: number): void {
+    for (let index = 0; index < times; index += 1) {
+      this.marks.push({ studentId, attendance });
+    }
+  }
+
   // ─── StudentCabinetRepository ───
 
   findByAccountId(accountId: string): Promise<MeProfileRow | null> {
@@ -255,7 +352,106 @@ class InMemoryCabinetStore {
 
     return Promise.resolve(found ? { groupId } : null);
   }
+
+  // ─── PerformanceRepository ───
+
+  findStudent(id: string): Promise<{ id: string; firstName: string; lastName: string } | null> {
+    const found = [...this.studentsByAccount.values()].find((row) => row.id === id);
+
+    return Promise.resolve(
+      found ? { id: found.id, firstName: found.firstName, lastName: found.lastName } : null,
+    );
+  }
+
+  /** Только финализированные недели — то самое правило, ради которого балл вообще устойчив. */
+  findFinalizedResults(studentId: string): Promise<StudentWeekResultRow[]> {
+    return Promise.resolve(
+      this.results.flatMap((result) => {
+        const week = this.weeks.get(result.weekId);
+        if (!week || week.submittedAt === null || result.studentId !== studentId) return [];
+
+        return [
+          {
+            sum: result.sum,
+            bonus: result.bonus,
+            exam: result.exam,
+            week: {
+              id: week.id,
+              weekNumber: week.weekNumber,
+              startDate: week.startDate,
+              submittedAt: week.submittedAt,
+              groupId: week.groupId,
+            },
+          },
+        ];
+      }),
+    );
+  }
+
+  findPerformanceMemberships(studentId: string): Promise<StudentMembershipRow[]> {
+    return Promise.resolve(
+      this.memberships
+        .filter((row) => row.studentId === studentId)
+        .map(({ status, group }) => ({
+          status,
+          group: {
+            id: group.id,
+            name: group.name,
+            course: { id: group.course.id, title: group.course.title },
+            branch: group.branch,
+          },
+        })),
+    );
+  }
+
+  aggregateAttendance(studentId: string): Promise<AttendanceTally[]> {
+    const counts = new Map<AttendanceMark, number>();
+    for (const mark of this.marks.filter((row) => row.studentId === studentId)) {
+      counts.set(mark.attendance, (counts.get(mark.attendance) ?? 0) + 1);
+    }
+
+    return Promise.resolve([...counts].map(([attendance, count]) => ({ attendance, count })));
+  }
+
+  /** В рейтинг идут только те, у кого есть действующее членство (решение сессии 0019). */
+  findRankedAverages(): Promise<RankedAverage[]> {
+    const ranked = new Set(
+      this.memberships
+        .filter((row) => row.status === GroupStudentStatus.ACTIVE)
+        .map((row) => row.studentId),
+    );
+
+    const sums = new Map<string, number[]>();
+    for (const result of this.results) {
+      const week = this.weeks.get(result.weekId);
+      if (!week || week.submittedAt === null || !ranked.has(result.studentId)) continue;
+
+      sums.set(result.studentId, [...(sums.get(result.studentId) ?? []), result.sum]);
+    }
+
+    return Promise.resolve(
+      [...sums].map(([studentId, values]) => ({
+        studentId,
+        average: values.reduce((total, value) => total + value, 0) / values.length,
+      })),
+    );
+  }
 }
+
+/**
+ * `findMemberships` у двух репозиториев называется одинаково, но отвечает разное:
+ * кабинету нужны страница, фильтр и менторы, витрине успеваемости — все членства
+ * целиком. Поэтому на `PerformanceRepository` хранилище подставляется отдельным
+ * объектом, где имя переведено на `findPerformanceMemberships`.
+ */
+const asPerformanceRepository = (store: InMemoryCabinetStore): PerformanceRepository =>
+  ({
+    findStudent: (id: string) => store.findStudent(id),
+    findFinalizedResults: (id: string) => store.findFinalizedResults(id),
+    findMemberships: (id: string) => store.findPerformanceMemberships(id),
+    aggregateAttendance: (id: string) => store.aggregateAttendance(id),
+    findRankedAverages: () => store.findRankedAverages(),
+  }) as unknown as PerformanceRepository;
 
 interface ProfileBody {
   id: string;
@@ -285,13 +481,33 @@ interface SlotBody {
   room: { name: string } | null;
 }
 
+interface PerformanceBody {
+  student: { id: string; firstName: string; lastName: string };
+  averageScore: number | null;
+  category: ActivityCategory | null;
+  categoryTitle: string | null;
+  passing: boolean;
+  weeksCount: number;
+  rank: { position: number | null; totalRanked: number; isTopStudent: boolean; ranked: boolean };
+  attendance: {
+    present: number;
+    late: number;
+    absent: number;
+    marked: number;
+    attendanceRate: number | null;
+  };
+  groups: { groupName: string | null; averageScore: number | null; weeksCount: number }[];
+}
+
 describe('Кабинет студента (e2e, хранилище в памяти)', () => {
   let app: INestApplication;
   let store: InMemoryCabinetStore;
+  let rbac: InMemoryRbacRepository;
   let tokens: TokenService;
 
   beforeEach(async () => {
     store = new InMemoryCabinetStore();
+    rbac = new InMemoryRbacRepository();
 
     const moduleRef = await Test.createTestingModule({
       imports: [
@@ -300,6 +516,9 @@ describe('Кабинет студента (e2e, хранилище в памят
         MailerModule,
         PhoneModule,
         AuthModule,
+        // `RbacModule` — из-за контроллера успеваемости, который приезжает вместе
+        // с `PerformanceModule` внутри кабинета: он закрыт правом каталога.
+        RbacModule,
         StudentCabinetModule,
       ],
       providers: [
@@ -312,6 +531,10 @@ describe('Кабинет студента (e2e, хранилище в памят
       .useValue({})
       .overrideProvider(StudentCabinetRepository)
       .useValue(store)
+      .overrideProvider(PerformanceRepository)
+      .useValue(asPerformanceRepository(store))
+      .overrideProvider(RbacRepository)
+      .useValue(rbac)
       .compile();
 
     tokens = moduleRef.get(TokenService, { strict: false });
@@ -347,6 +570,19 @@ describe('Кабинет студента (e2e, хранилище в памят
   const employeeToken = async (): Promise<string> =>
     (await tokens.issuePair({ sub: randomUUID(), sid: randomUUID(), type: AccountType.EMPLOYEE }))
       .accessToken;
+
+  /** Сотрудник с правом на карточки студентов — чтобы сверить кабинет с админ-стороной. */
+  const staffToken = async (): Promise<string> => {
+    const accountId = randomUUID();
+    rbac.grant(accountId, ['Permission.Students.Views']);
+    const { accessToken } = await tokens.issuePair({
+      sub: accountId,
+      sid: randomUUID(),
+      type: AccountType.EMPLOYEE,
+    });
+
+    return accessToken;
+  };
 
   const get = (url: string, token: string) =>
     request(app.getHttpServer()).get(url).set('Authorization', `Bearer ${token}`);
@@ -646,19 +882,198 @@ describe('Кабинет студента (e2e, хранилище в памят
     });
   });
 
+  describe('Свои баллы и рейтинг (ТЗ 5.3: «свои баллы», «рейтинг»)', () => {
+    it('отдаёт общий балл, категорию, место и корону', async () => {
+      const me = await student();
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group);
+      store.addResult(store.addWeek(group, 1), me.id, 100);
+      store.addResult(store.addWeek(group, 2), me.id, 92);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(body).toMatchObject({
+        student: { id: me.id },
+        averageScore: 96,
+        category: ActivityCategory.ChatGpt,
+        categoryTitle: 'ChatGPT',
+        passing: true,
+        weeksCount: 2,
+        rank: { position: 1, totalRanked: 1, isTopStudent: true, ranked: true },
+      });
+    });
+
+    it('кабинет и карточка студента показывают один и тот же балл', async () => {
+      const me = await student();
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group);
+      store.addResult(store.addWeek(group, 1), me.id, 87);
+      store.addResult(store.addWeek(group, 2), me.id, 88);
+
+      const mine = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+      const card = dataOf<PerformanceBody>(
+        await get(`/api/v1/students/${me.id}/performance`, await staffToken()).expect(200),
+      );
+
+      // Сравнение двух ответов между собой, а не с константой: расходиться им
+      // нельзя по построению, и тест обязан ловить именно расхождение.
+      expect(mine).toEqual(card);
+      expect(mine.averageScore).toBe(87.5);
+    });
+
+    it('открытая неделя в свой балл не входит', async () => {
+      const me = await student();
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group);
+      store.addResult(store.addWeek(group, 1), me.id, 100);
+      store.addResult(store.addWeek(group, 2, false), me.id, 0);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(body).toMatchObject({ averageScore: 100, weeksCount: 1 });
+    });
+
+    it('до первой финализации балла нет — null, а не ноль (и не Black list)', async () => {
+      const me = await student();
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group);
+      store.addResult(store.addWeek(group, 1, false), me.id, 0);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(body).toMatchObject({
+        averageScore: null,
+        category: null,
+        categoryTitle: null,
+        passing: false,
+        weeksCount: 0,
+        rank: { position: null, isTopStudent: false, ranked: false },
+      });
+    });
+
+    it('своё место считается среди всех учащихся центра, а корона — у первого', async () => {
+      const me = await student();
+      const best = await student();
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group);
+      store.enroll(best.id, group);
+      const week = store.addWeek(group, 1);
+      store.addResult(week, me.id, 80);
+      store.addResult(week, best.id, 100);
+
+      const mine = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+      const theirs = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', best.token).expect(200),
+      );
+
+      expect(mine.rank).toMatchObject({ position: 2, totalRanked: 2, isTopStudent: false });
+      expect(theirs.rank).toMatchObject({ position: 1, totalRanked: 2, isTopStudent: true });
+    });
+
+    it('покинувший курс видит свой балл, но места в рейтинге у него нет', async () => {
+      const me = await student({ status: StudentStatus.NO_ACTIVE });
+      const group = store.addGroup('Frontend-1');
+      store.enroll(me.id, group, {
+        status: GroupStudentStatus.FINISHED,
+        statusReason: 'Курс завершён',
+        statusChangedAt: new Date('2026-11-30T12:00:00.000Z'),
+      });
+      store.addResult(store.addWeek(group, 1), me.id, 100);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(body).toMatchObject({
+        averageScore: 100,
+        rank: { position: null, totalRanked: 0, isTopStudent: false, ranked: false },
+      });
+    });
+
+    it('разрез по группам держится за членства: группа без закрытых недель остаётся с null', async () => {
+      const me = await student();
+      const scored = store.addGroup('Frontend-1');
+      const fresh = store.addGroup('Python-1', 'Python Basic');
+      store.enroll(me.id, scored);
+      store.enroll(me.id, fresh);
+      store.addResult(store.addWeek(scored, 1), me.id, 90);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(
+        body.groups.map(({ groupName, averageScore, weeksCount }) => ({
+          groupName,
+          averageScore,
+          weeksCount,
+        })),
+      ).toEqual(
+        expect.arrayContaining([
+          { groupName: 'Frontend-1', averageScore: 90, weeksCount: 1 },
+          { groupName: 'Python-1', averageScore: null, weeksCount: 0 },
+        ]),
+      );
+    });
+
+    it('посещаемость считает опоздание приходом (ТЗ 5.8)', async () => {
+      const me = await student();
+      store.addMarks(me.id, AttendanceMark.PRESENT, 4);
+      store.addMarks(me.id, AttendanceMark.LATE, 1);
+      store.addMarks(me.id, AttendanceMark.ABSENT, 1);
+
+      const body = dataOf<PerformanceBody>(
+        await get('/api/v1/me/performance', me.token).expect(200),
+      );
+
+      expect(body.attendance).toMatchObject({
+        present: 4,
+        late: 1,
+        absent: 1,
+        marked: 6,
+        attendanceRate: 83.33,
+      });
+    });
+
+    it('401 без токена, 403 сотруднику, 403 заблокированному', async () => {
+      const blocked = await student({ status: StudentStatus.BLOCK });
+
+      await request(app.getHttpServer()).get('/api/v1/me/performance').expect(401);
+      await get('/api/v1/me/performance', await employeeToken()).expect(403);
+      await get('/api/v1/me/performance', blocked.token).expect(403);
+    });
+  });
+
   describe('OpenAPI', () => {
-    it('три пути кабинета описаны и доступны только на чтение', () => {
+    it('четыре пути кабинета описаны и доступны только на чтение', () => {
       const document = buildOpenApiDocument(app);
 
       expect(Object.keys(document.paths)).toEqual(
-        expect.arrayContaining(['/api/v1/me', '/api/v1/me/groups', '/api/v1/me/schedule']),
+        expect.arrayContaining([
+          '/api/v1/me',
+          '/api/v1/me/groups',
+          '/api/v1/me/schedule',
+          '/api/v1/me/performance',
+        ]),
       );
 
-      const profile = document.paths['/api/v1/me'];
-      expect(profile?.get?.responses['200']).toBeDefined();
-      expect(profile?.post).toBeUndefined();
-      expect(profile?.put).toBeUndefined();
-      expect(profile?.delete).toBeUndefined();
+      for (const path of ['/api/v1/me', '/api/v1/me/performance']) {
+        const described = document.paths[path];
+        expect(described?.get?.responses['200']).toBeDefined();
+        expect(described?.post).toBeUndefined();
+        expect(described?.put).toBeUndefined();
+        expect(described?.delete).toBeUndefined();
+      }
     });
   });
 });

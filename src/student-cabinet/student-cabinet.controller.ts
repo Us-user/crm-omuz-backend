@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../auth';
 import { AccountTypeGuard, CurrentUser, RequireAccountType } from '../auth';
 import type { Paginated } from '../common';
 import { ApiDataResponse, ApiPaginatedResponse, ApiStandardErrors } from '../common';
+import { StudentPerformanceDto } from '../performance/dto';
 import {
   MeGroupDto,
   MeGroupQueryDto,
@@ -77,6 +78,24 @@ export class StudentCabinetController {
     @Query() query: MeGroupQueryDto,
   ): Promise<Paginated<MeGroupDto>> {
     return this.cabinet.groups(user.accountId, query);
+  }
+
+  @Get('performance')
+  @ApiOperation({
+    summary: 'Свои баллы и свой рейтинг',
+    description:
+      'Общий балл, категория активности, место в рейтинге и корона, посещаемость, ' +
+      'разрез по группам и закрытые недели для графика (ТЗ 5.3: кабинет — «свои баллы» ' +
+      'и «рейтинг»; расчёт — ТЗ 5.8, 5.13). Два раздела ТЗ закрыты одним маршрутом: ' +
+      'место выводится из общего балла, и разделять их значило бы считать одно и то же ' +
+      'дважды. **В балл входят только финализированные недели**; пока группа ни разу ' +
+      'не нажала «Отправить результат», балла нет (`null`, а не ноль). ' +
+      'Ответ тот же, что у `GET /students/{id}/performance`, — числа обязаны совпадать.',
+  })
+  @ApiDataResponse(StudentPerformanceDto, { description: 'Успеваемость студента' })
+  @ApiStandardErrors(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
+  performance(@CurrentUser() user: AuthenticatedUser): Promise<StudentPerformanceDto> {
+    return this.cabinet.performanceOf(user.accountId);
   }
 
   @Get('schedule')

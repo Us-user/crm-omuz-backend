@@ -6,6 +6,7 @@ import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
+import { EmployeesModule } from './employees/employees.module';
 import { GroupJournalModule } from './group-journal/group-journal.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
 import { GroupScheduleModule } from './group-schedule/group-schedule.module';
@@ -49,6 +50,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentFeedbackModule,
     StudentParentsModule,
     PerformanceModule,
+    EmployeesModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,

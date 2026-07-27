@@ -11,6 +11,9 @@ import {
 } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
+import type { StudentPerformanceDto } from '../performance/dto';
+import { ActivityCategory } from '../performance/performance';
+import type { PerformanceService } from '../performance/performance.service';
 import { MeGroupQueryDto, MeGroupSortField, MeScheduleQueryDto, MeScheduleSortField } from './dto';
 import type {
   MeMembershipRow,
@@ -108,6 +111,25 @@ const groupQuery = (overrides: Partial<MeGroupQueryDto> = {}): MeGroupQueryDto =
 const scheduleQuery = (overrides: Partial<MeScheduleQueryDto> = {}): MeScheduleQueryDto =>
   Object.assign(new MeScheduleQueryDto(), overrides);
 
+/**
+ * Витрина успеваемости целиком приходит из `PerformanceService` — здесь
+ * проверяется только то, что кабинет спрашивает её **про себя** и не подмешивает
+ * своих правил. Сам расчёт покрыт `performance.service.spec.ts`.
+ */
+const performanceResult = (): StudentPerformanceDto =>
+  ({
+    student: { id: STUDENT_ID, firstName: 'Нигина', lastName: 'Каримова' },
+    averageScore: 87.33,
+    category: ActivityCategory.Handsome,
+    categoryTitle: 'Handsome',
+    passing: true,
+    weeksCount: 3,
+    rank: { position: 2, totalRanked: 12, isTopStudent: false, ranked: true },
+    attendance: { present: 20, late: 3, absent: 2, marked: 25, attendanceRate: 92 },
+    groups: [],
+    weeks: [],
+  }) satisfies StudentPerformanceDto;
+
 describe('StudentCabinetService', () => {
   let repository: jest.Mocked<
     Pick<
@@ -115,6 +137,7 @@ describe('StudentCabinetService', () => {
       'findByAccountId' | 'findMemberships' | 'findSchedule' | 'findActiveMembership'
     >
   >;
+  let performance: jest.Mocked<Pick<PerformanceService, 'findStudentPerformance'>>;
   let service: StudentCabinetService;
 
   beforeEach(() => {
@@ -124,8 +147,12 @@ describe('StudentCabinetService', () => {
       findSchedule: jest.fn().mockResolvedValue({ rows: [slot()], total: 1 }),
       findActiveMembership: jest.fn().mockResolvedValue({ groupId: GROUP_ID }),
     };
+    performance = { findStudentPerformance: jest.fn().mockResolvedValue(performanceResult()) };
 
-    service = new StudentCabinetService(repository as unknown as StudentCabinetRepository);
+    service = new StudentCabinetService(
+      repository as unknown as StudentCabinetRepository,
+      performance as unknown as PerformanceService,
+    );
   });
 
   describe('Профиль (ТЗ 5.3: «свой профиль»)', () => {
@@ -413,6 +440,59 @@ describe('StudentCabinetService', () => {
         NotFoundException,
       );
       expect(repository.findSchedule).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Свои баллы и рейтинг (ТЗ 5.3: «свои баллы», «рейтинг»)', () => {
+    it('спрашивает успеваемость про себя — идентификатор берётся из профиля, а не из запроса', async () => {
+      await service.performanceOf(ACCOUNT_ID);
+
+      expect(repository.findByAccountId).toHaveBeenCalledWith(ACCOUNT_ID);
+      expect(performance.findStudentPerformance).toHaveBeenCalledWith(STUDENT_ID);
+    });
+
+    it('отдаёт витрину как есть: балл, категория, место и корона', async () => {
+      expect(await service.performanceOf(ACCOUNT_ID)).toMatchObject({
+        averageScore: 87.33,
+        category: ActivityCategory.Handsome,
+        categoryTitle: 'Handsome',
+        passing: true,
+        weeksCount: 3,
+        rank: { position: 2, totalRanked: 12, isTopStudent: false, ranked: true },
+      });
+    });
+
+    it('своих правил кабинет не добавляет: «нет закрытых недель» остаётся null, а не нулём', async () => {
+      performance.findStudentPerformance.mockResolvedValue({
+        ...performanceResult(),
+        averageScore: null,
+        category: null,
+        categoryTitle: null,
+        passing: false,
+        weeksCount: 0,
+        rank: { position: null, totalRanked: 12, isTopStudent: false, ranked: false },
+      });
+
+      expect(await service.performanceOf(ACCOUNT_ID)).toMatchObject({
+        averageScore: null,
+        category: null,
+        weeksCount: 0,
+        rank: { position: null, ranked: false },
+      });
+    });
+
+    it('403 заблокированному — до расчёта', async () => {
+      repository.findByAccountId.mockResolvedValue(profile({ status: StudentStatus.BLOCK }));
+
+      await expect(service.performanceOf(ACCOUNT_ID)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(performance.findStudentPerformance).not.toHaveBeenCalled();
+    });
+
+    it('404 без профиля — до расчёта', async () => {
+      repository.findByAccountId.mockResolvedValue(null);
+
+      await expect(service.performanceOf(ACCOUNT_ID)).rejects.toBeInstanceOf(NotFoundException);
+      expect(performance.findStudentPerformance).not.toHaveBeenCalled();
     });
   });
 });

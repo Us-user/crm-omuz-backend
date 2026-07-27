@@ -2,6 +2,8 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import { StudentStatus } from '@prisma/client';
 
 import { BusinessRuleException, formatDayTime, formatIsoDate, Paginated } from '../common';
+import type { StudentPerformanceDto } from '../performance/dto';
+import { PerformanceService } from '../performance/performance.service';
 import type {
   MeGroupDto,
   MeGroupQueryDto,
@@ -28,12 +30,16 @@ import { StudentCabinetRepository } from './student-cabinet.repository';
  *     запрет обходится бесплатно и действует сразу, не дожидаясь, пока истечёт
  *     уже выданный access-токен.
  *
- * Баллов и рейтинга здесь нет: они считаются по журналу (ТЗ 5.8), которого
- * не существует до Фазы 5. Пустой раздел был бы враньём, а не заготовкой.
+ * Все пять разделов ТЗ 5.3 на месте: профиль, группы, расписание, свои баллы
+ * и свой рейтинг. Последние два — тот же расчёт, что и на карточке студента
+ * (`PerformanceService`), а не своя копия правил.
  */
 @Injectable()
 export class StudentCabinetService {
-  constructor(private readonly repository: StudentCabinetRepository) {}
+  constructor(
+    private readonly repository: StudentCabinetRepository,
+    private readonly performance: PerformanceService,
+  ) {}
 
   async profile(accountId: string): Promise<MeProfileDto> {
     return toProfileDto(await this.requireStudent(accountId));
@@ -77,6 +83,24 @@ export class StudentCabinetService {
     });
 
     return Paginated.from(rows.map(toSlotDto), total, query);
+  }
+
+  /**
+   * Свои баллы и своё место в рейтинге (ТЗ 5.3: кабинет — «свои баллы»
+   * и «рейтинг»). Два раздела закрываются одним маршрутом, потому что это
+   * один и тот же расчёт: место выводится из общего балла (ТЗ 5.8, 5.13).
+   *
+   * Ответ повторяет `GET /students/{id}/performance` вплоть до типа. Копия DTO
+   * без блока `student` выглядела бы аккуратнее, но развела бы **одни и те же
+   * числа** по двум формам, и расхождение между «моим баллом» и баллом
+   * в карточке всплыло бы не отказом, а спором студента с ментором. Это
+   * отличается от профиля (сессия 0017), где своя копия оправдана: там
+   * админ-сторона намеренно показывает больше, чем сам студент.
+   */
+  async performanceOf(accountId: string): Promise<StudentPerformanceDto> {
+    const student = await this.requireStudent(accountId);
+
+    return this.performance.findStudentPerformance(student.id);
   }
 
   /**
