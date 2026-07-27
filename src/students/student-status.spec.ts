@@ -1,7 +1,7 @@
 import { GroupStudentStatus, StudentStatus } from '@prisma/client';
 
 import type { MembershipStatusSnapshot } from './student-status';
-import { deriveStudentStatus } from './student-status';
+import { deriveStudentStatus, statusAfterUnblock } from './student-status';
 
 const at = (iso: string): Date => new Date(iso);
 
@@ -125,5 +125,38 @@ describe('deriveStudentStatus', () => {
         deriveStudentStatus(StudentStatus.ACTIVE, [membership(GroupStudentStatus.ACTIVE)]),
       ).toBeNull();
     });
+  });
+});
+
+describe('statusAfterUnblock', () => {
+  it('учащийся студент возвращается в ACTIVE', () => {
+    expect(statusAfterUnblock([membership(GroupStudentStatus.ACTIVE)])).toBe(StudentStatus.ACTIVE);
+  });
+
+  it('прошедший курс возвращается в FINISHED', () => {
+    expect(
+      statusAfterUnblock([membership(GroupStudentStatus.FINISHED, at('2026-05-01T00:00:00.000Z'))]),
+    ).toBe(StudentStatus.FINISHED);
+  });
+
+  it('ушедший возвращается в NO_ACTIVE', () => {
+    expect(
+      statusAfterUnblock([membership(GroupStudentStatus.LEFT, at('2026-05-01T00:00:00.000Z'))]),
+    ).toBe(StudentStatus.NO_ACTIVE);
+  });
+
+  it('смотрит на последнее закрытое членство, как и вывод статуса', () => {
+    expect(
+      statusAfterUnblock([
+        membership(GroupStudentStatus.FINISHED, at('2026-03-01T00:00:00.000Z')),
+        membership(GroupStudentStatus.LEFT, at('2026-06-01T00:00:00.000Z')),
+      ]),
+    ).toBe(StudentStatus.NO_ACTIVE);
+  });
+
+  // Статус до блокировки нигде не хранится, поэтому профиль без учебной истории
+  // возвращается к значению нового профиля, а не записывается в покинувшие курс.
+  it('профиль без членств возвращается в ACTIVE', () => {
+    expect(statusAfterUnblock([])).toBe(StudentStatus.ACTIVE);
   });
 });

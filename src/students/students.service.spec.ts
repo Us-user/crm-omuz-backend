@@ -417,11 +417,38 @@ describe('StudentsService', () => {
     });
 
     it('статус можно поставить руками (ТЗ 5.3)', async () => {
-      await service.update(STUDENT_ID, { status: StudentStatus.BLOCK });
+      await service.update(STUDENT_ID, { status: StudentStatus.FINISHED });
 
       expect(repository.update).toHaveBeenCalledWith(
         STUDENT_ID,
-        expect.objectContaining({ status: StudentStatus.BLOCK }),
+        expect.objectContaining({ status: StudentStatus.FINISHED }),
+      );
+    });
+
+    it('422 на «Block» через правку: вход остался бы открытым', async () => {
+      await expect(
+        service.update(STUDENT_ID, { status: StudentStatus.BLOCK }),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('422 на снятие «Block» правкой: вход остался бы закрытым', async () => {
+      repository.findById.mockResolvedValue({ ...row(), status: StudentStatus.BLOCK });
+
+      await expect(
+        service.update(STUDENT_ID, { status: StudentStatus.ACTIVE }),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+
+    it('заблокированному можно править остальные поля', async () => {
+      repository.findById.mockResolvedValue({ ...row(), status: StudentStatus.BLOCK });
+
+      await service.update(STUDENT_ID, { status: StudentStatus.BLOCK, notes: 'Ждёт разбора' });
+
+      expect(repository.update).toHaveBeenCalledWith(
+        STUDENT_ID,
+        expect.objectContaining({ notes: 'Ждёт разбора' }),
       );
     });
 

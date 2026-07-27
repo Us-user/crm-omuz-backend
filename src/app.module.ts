@@ -20,6 +20,8 @@ import { RbacAdminModule } from './rbac/rbac-admin.module';
 import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
+import { StudentAccessModule } from './student-access/student-access.module';
+import { StudentFeedbackModule } from './student-feedback/student-feedback.module';
 import { StudentsModule } from './students/students.module';
 import { SyllabusModule } from './syllabus/syllabus.module';
 
@@ -36,6 +38,8 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     RbacModule,
     RbacAdminModule,
     StudentsModule,
+    StudentAccessModule,
+    StudentFeedbackModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,

@@ -769,14 +769,13 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
       expect(store.students.get(student.id)?.lastName).toBe('Каримова');
     });
 
-    it('статус ставится руками (ТЗ 5.3: Active / No Active / Finished / Block)', async () => {
+    it('статус ставится руками (ТЗ 5.3: Active / No Active / Finished)', async () => {
       const student = store.addStudent();
       const token = await actor('Permission.Students.Update');
 
       for (const status of [
         StudentStatus.NO_ACTIVE,
         StudentStatus.FINISHED,
-        StudentStatus.BLOCK,
         StudentStatus.ACTIVE,
       ]) {
         const response = await send('put', `/api/v1/students/${student.id}`, token, {
@@ -785,6 +784,55 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
 
         expect(dataOf<StudentBody>(response).status).toBe(status);
       }
+    });
+
+    // «Block» по ТЗ 5.3 — это блок **входа**, то есть статус профиля и аккаунта
+    // вместе. Поставленный формой, он пометил бы студента заблокированным,
+    // оставив ему возможность войти.
+    it('422 на «Block» через правку — для этого есть POST /students/{id}/block', async () => {
+      const student = store.addStudent();
+
+      await send(
+        'put',
+        `/api/v1/students/${student.id}`,
+        await actor('Permission.Students.Update'),
+        {
+          status: StudentStatus.BLOCK,
+        },
+      ).expect(422);
+
+      expect(store.students.get(student.id)?.status).toBe(StudentStatus.ACTIVE);
+    });
+
+    it('422 на снятие «Block» правкой — вход остался бы закрытым', async () => {
+      const student = store.addStudent({ status: StudentStatus.BLOCK });
+
+      await send(
+        'put',
+        `/api/v1/students/${student.id}`,
+        await actor('Permission.Students.Update'),
+        {
+          status: StudentStatus.ACTIVE,
+        },
+      ).expect(422);
+
+      expect(store.students.get(student.id)?.status).toBe(StudentStatus.BLOCK);
+    });
+
+    it('заблокированному правятся остальные поля', async () => {
+      const student = store.addStudent({ status: StudentStatus.BLOCK });
+
+      const response = await send(
+        'put',
+        `/api/v1/students/${student.id}`,
+        await actor('Permission.Students.Update'),
+        { notes: 'Ждёт разбора' },
+      ).expect(200);
+
+      expect(dataOf<StudentBody>(response)).toMatchObject({
+        notes: 'Ждёт разбора',
+        status: StudentStatus.BLOCK,
+      });
     });
 
     it('400 на неизвестный статус', async () => {

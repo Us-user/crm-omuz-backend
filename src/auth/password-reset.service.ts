@@ -65,16 +65,7 @@ export class PasswordResetService {
       return { message: FORGOT_ACCEPTED };
     }
 
-    const code = this.codes.generate();
-
-    // Прежние коды гасим до выпуска нового: живым остаётся ровно один,
-    // иначе «свежий» код не отменял бы отправленный минуту назад.
-    await this.repository.consumeActivePasswordResetCodes(account.id);
-    await this.repository.createPasswordResetCode({
-      accountId: account.id,
-      codeHash: this.codes.hash(code, account.id),
-      expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000),
-    });
+    const code = await this.issueCode(account.id);
 
     await this.mailer.send(
       renderPasswordResetEmail({
@@ -86,6 +77,33 @@ export class PasswordResetService {
     );
 
     return { message: FORGOT_ACCEPTED };
+  }
+
+  /**
+   * Выпускает одноразовый код и гасит прежние: живым остаётся ровно один,
+   * иначе «свежий» код не отменял бы отправленный минуту назад.
+   *
+   * Письмо отправляет вызывающий — у приглашения студента (ТЗ 5.3) свой текст,
+   * а жизненный цикл кода (подпись, срок, единственность) должен остаться
+   * в одном месте. Установка пароля по такому коду идёт общим путём
+   * `POST /auth/password/reset`.
+   *
+   * Лимита «3 в час» здесь нет намеренно: он относится к **публичному** запросу
+   * кода (ТЗ 3.1) и проверяется в `forgot`, до вызова.
+   *
+   * @returns код открытым текстом — единственное место, где он существует.
+   */
+  async issueCode(accountId: string): Promise<string> {
+    const code = this.codes.generate();
+
+    await this.repository.consumeActivePasswordResetCodes(accountId);
+    await this.repository.createPasswordResetCode({
+      accountId,
+      codeHash: this.codes.hash(code, accountId),
+      expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000),
+    });
+
+    return code;
   }
 
   /** Установка нового пароля по коду (`POST /auth/password/reset`). */

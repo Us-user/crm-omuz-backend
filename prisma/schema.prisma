@@ -27,7 +27,13 @@
 //   GroupMentor    — ментор группы с ролью Teaching/Support (ТЗ 5.5);
 //   ScheduleSlot   — слот расписания группы: день недели + время + аудитория (ТЗ 5.5, 5.10).
 //
-// Состав групп (GroupStudent, Enrollment) добавляется следующим куском Фазы 3.
+//   GroupStudent   — членство студента в группе со своим статусом (ТЗ 5.5);
+//                    оно же играет роль `Enrollment` из карты сущностей ТЗ 4.
+//
+// Фаза 4 — студенты (ТЗ 5.3):
+//   Feedback — заметка сотрудника о студенте (карточка: Feedback / Edit / Block / Delete).
+//   Приглашение (Invite) и блокировка (Block) новых таблиц не заводят: первое
+//   создаёт обычный `Account`, вторая переводит `Account.status` и `Student.status`.
 
 generator client {
   provider = "prisma-client-js"
@@ -146,6 +152,9 @@ model Student {
   /// курса — нет.
   groups GroupStudent[]
 
+  /// Заметки сотрудников о студенте (ТЗ 5.3: карточка — Feedback).
+  feedback Feedback[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -202,6 +211,9 @@ model Employee {
   /// Занятия, которые сотрудник ведёт лично (ТЗ 5.10: ментор в расписании).
   /// Отсюда же берутся часы для расчёта зарплаты (ТЗ 5.16).
   mentorSlots ScheduleSlot[]
+
+  /// Заметки, написанные этим сотрудником о студентах (ТЗ 5.3).
+  authoredFeedback Feedback[] @relation("FeedbackAuthor")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -849,7 +861,7 @@ model GroupStudent {
 
   /// Причина смены статуса (ТЗ 5.5: Reason обязателен; ТЗ 5.12: «причина —
   /// свободный текст»). У только что зачисленного студента причины нет.
-  statusReason String?
+  statusReason    String?
   /// Когда статус меняли в последний раз (ТЗ 5.12: «причина и дата»).
   statusChangedAt DateTime?
 
@@ -874,4 +886,32 @@ model GroupStudent {
   @@index([groupId, status])
   @@index([transferredFromGroupId])
   @@map("group_students")
+}
+
+/// Обратная связь по студенту (ТЗ 5.3: карточка — Feedback / Edit / Block / Delete).
+///
+/// Заметка сотрудника о студенте: наблюдение ментора, разговор с родителями,
+/// причина пропусков. Это не оценка: успеваемость и рейтинг считаются
+/// по журналу (ТЗ 5.8), и вторая шкала конкурировала бы с ними.
+model Feedback {
+  id String @id @default(uuid()) @db.Uuid
+
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  /// Автор заметки. Необязателен: профиль сотрудника может быть удалён (ТЗ 5.14),
+  /// но заметка остаётся — она про студента, а не про того, кто её написал.
+  authorId String?   @db.Uuid
+  author   Employee? @relation("FeedbackAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  text String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Заметки читаются лентой по студенту, свежие сверху.
+  @@index([studentId, createdAt])
+  /// Обратный обход: что писал конкретный сотрудник.
+  @@index([authorId])
+  @@map("student_feedback")
 }

@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { StudentStatus } from '@prisma/client';
 
 import {
   BusinessRuleException,
@@ -95,7 +96,8 @@ export class StudentsService {
   }
 
   async update(id: string, dto: UpdateStudentDto): Promise<StudentDto> {
-    await this.require(id);
+    const current = await this.require(id);
+    if (dto.status !== undefined) this.assertBlockNotCrossed(current.status, dto.status);
 
     // Телефон обязателен и очистке не подлежит: пустая строка не пройдёт
     // разбор и вернётся честным 400, а не молча оставит прежний номер.
@@ -163,6 +165,36 @@ export class StudentsService {
     if (twin && twin.id !== exceptId) {
       throw new ConflictException(
         `Телефон ${phone} уже записан за студентом ${twin.lastName} ${twin.firstName}`,
+      );
+    }
+  }
+
+  /**
+   * `BLOCK` через правку карточки не ставится и не снимается — 422 с указанием
+   * на `POST /students/{id}/block`.
+   *
+   * Причина не в аккуратности маршрутов: по ТЗ 5.3 Block — это **блок входа**,
+   * то есть статус профиля и `Account.status` вместе. Разрешив ставить `BLOCK`
+   * формой, мы получили бы студента, помеченного заблокированным, который
+   * продолжает входить в систему; разрешив снимать — наоборот, «активного»
+   * студента, которому вход по-прежнему закрыт. Оба состояния выглядят
+   * работающими и расходятся молча.
+   */
+  private assertBlockNotCrossed(current: StudentStatus, next: StudentStatus): void {
+    if (next === current) return;
+
+    if (next === StudentStatus.BLOCK) {
+      throw new BusinessRuleException(
+        'Статус «Block» ставится действием POST /students/{id}/block — оно же закрывает вход (ТЗ 5.3)',
+        { status: next },
+      );
+    }
+
+    if (current === StudentStatus.BLOCK) {
+      throw new BusinessRuleException(
+        'Студент заблокирован: снимите блокировку действием POST /students/{id}/block — ' +
+          'иначе статус изменится, а вход останется закрытым',
+        { status: current },
       );
     }
   }

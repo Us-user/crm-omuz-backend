@@ -33,6 +33,9 @@ import { TokenService } from './token.service';
     // Глобально: по умолчанию защищён каждый эндпоинт, открывается через `@Public()` (ТЗ 3.8).
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
-  exports: [PasswordService, TokenService],
+  // `PasswordResetService` наружу нужен приглашению студента (ТЗ 5.3): оно выпускает
+  // тот же одноразовый код, и вторая реализация его жизненного цикла разошлась бы
+  // с этой по сроку, подписи и правилу «живой код ровно один».
+  exports: [PasswordService, PasswordResetService, TokenService],
 })
 export class AuthModule {}

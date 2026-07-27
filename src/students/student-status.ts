@@ -50,6 +50,24 @@ export function deriveStudentStatus(
   return next === current ? null : next;
 }
 
+/**
+ * Статус, в который возвращается студент после снятия блокировки
+ * (`POST /students/{id}/block` с `blocked: false`, ТЗ 5.3).
+ *
+ * `deriveStudentStatus` здесь не годится: он намеренно не трогает `BLOCK`,
+ * а разблокировка — это как раз тот единственный случай, когда `BLOCK` снимают.
+ *
+ * Статус до блокировки нигде не хранится (ТЗ такого поля не просит), поэтому
+ * он выводится заново из членств. Профиль без учебной истории возвращается
+ * в `ACTIVE` — то же значение, с которым заводится новый профиль
+ * (`Student.status @default(ACTIVE)`): человек снова числится в центре
+ * и ждёт набора, а `NO_ACTIVE` записал бы его в покинувшие курс (ТЗ 5.12)
+ * без единого курса за спиной.
+ */
+export function statusAfterUnblock(memberships: MembershipStatusSnapshot[]): StudentStatus {
+  return memberships.length === 0 ? StudentStatus.ACTIVE : statusOf(memberships);
+}
+
 const statusOf = (memberships: MembershipStatusSnapshot[]): StudentStatus => {
   if (memberships.some((m) => m.status === GroupStudentStatus.ACTIVE)) {
     return StudentStatus.ACTIVE;
