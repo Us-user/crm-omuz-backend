@@ -17,5 +17,9 @@ import { AvansService } from './avans.service';
 @Module({
   controllers: [AvansController],
   providers: [AvansService, AvansRepository],
+  // Сервис экспортируется ради кабинета ментора (ТЗ 5.4): подача заявки о себе —
+  // тот же сценарий, только адресованный от токена, и второй его экземпляр
+  // разошёлся бы с первым в правилах, которые касаются денег (сессия 0022).
+  exports: [AvansService],
 })
 export class AvansModule {}
