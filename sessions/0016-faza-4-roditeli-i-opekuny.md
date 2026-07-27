@@ -210,6 +210,21 @@ SQL сгенерирован `prisma migrate diff --from-schema-datamodel … --
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30230379561`, коммит `209396d`, зелёный):
+- `npx prisma migrate deploy` — все **тринадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260729000000_phase4_parents`: enum `ParentRelation`,
+  таблицы `parents` и `student_parents`, уникальный индекс по телефону, составной
+  первичный ключ `(studentId, parentId)`, два внешних ключа `CASCADE` и **удаление
+  колонки `students.parentPhone`** в БД разворачиваются. Дописанный руками блок переноса
+  данных синтаксически принят PostgreSQL, но отработал на пустой таблице (см. выше);
+- `npm test` — 603 теста, 36 наборов;
+- `npm run test:e2e` целиком — **15 наборов, 430 тестов** (было 14 и 400), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentFeedback + StudentParents + Branches + Rooms +
+  Courses + Groups + GroupMentors + GroupSchedule + GroupStudents + Syllabus) против
+  настоящих PostgreSQL и Redis: приложение с новым модулем поднимается и подтверждает
+  `database: up`.
+
 **НЕ проверено (честно):**
 - **Миграция локально не применялась** — причина та же, что в сессиях 0001–0015:
   в `.env` плейсхолдер `ЗАМЕНИТЕ_ПАРОЛЬ`, пароль локального PostgreSQL неизвестен,
@@ -279,6 +294,7 @@ server`) — известное состояние окружения с сес�
 
 ## Коммит
 
-- `<заполняется после пуша>`
+- `209396d` — «Фаза 4: родители и опекуны студента» (24 файла, +2704 −42).
+- На `209396d` прогнан зелёный CI (run `30230379561`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
