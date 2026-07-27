@@ -6,6 +6,7 @@ import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CoursesModule } from './courses/courses.module';
+import { GroupJournalModule } from './group-journal/group-journal.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
 import { GroupScheduleModule } from './group-schedule/group-schedule.module';
 import { GroupStudentsModule } from './group-students/group-students.module';
@@ -22,6 +23,7 @@ import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { StudentAccessModule } from './student-access/student-access.module';
 import { StudentCabinetModule } from './student-cabinet/student-cabinet.module';
+import { StudentCoinsModule } from './student-coins/student-coins.module';
 import { StudentFeedbackModule } from './student-feedback/student-feedback.module';
 import { StudentParentsModule } from './student-parents/student-parents.module';
 import { StudentsModule } from './students/students.module';
@@ -42,12 +44,14 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentsModule,
     StudentAccessModule,
     StudentCabinetModule,
+    StudentCoinsModule,
     StudentFeedbackModule,
     StudentParentsModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,
     GroupsModule,
+    GroupJournalModule,
     GroupMentorsModule,
     GroupScheduleModule,
     GroupStudentsModule,

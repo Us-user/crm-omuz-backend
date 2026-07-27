@@ -17,10 +17,13 @@ const toInt = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
 
 /**
- * Базовые query-параметры списков (ТЗ 3.5): пагинация, поиск, сортировка.
- * Доменные фильтры добавляются наследованием в модулях.
+ * Постраничный список без поиска (ТЗ 3.5): страница и сортировка.
+ *
+ * Отдельно от `PaginationQueryDto` ради списков, в которых искать нечего:
+ * унаследованный `search` был бы параметром, который есть в OpenAPI
+ * и молча ничего не делает, — а это хуже, чем его отсутствие.
  */
-export class PaginationQueryDto {
+export class PageQueryDto {
   @ApiPropertyOptional({ description: 'Номер страницы, с 1', minimum: 1, default: DEFAULT_PAGE })
   @IsOptional()
   @Transform(toInt)
@@ -40,13 +43,6 @@ export class PaginationQueryDto {
   @Min(1)
   @Max(MAX_LIMIT)
   limit: number = DEFAULT_LIMIT;
-
-  @ApiPropertyOptional({ description: 'Строка полнотекстового поиска' })
-  @IsOptional()
-  @Transform(trimString)
-  @IsString()
-  @MaxLength(200)
-  search?: string;
 
   @ApiPropertyOptional({ description: 'Поле сортировки' })
   @IsOptional()
@@ -73,4 +69,17 @@ export class PaginationQueryDto {
   get take(): number {
     return this.limit;
   }
+}
+
+/**
+ * Базовые query-параметры списков (ТЗ 3.5): пагинация, поиск, сортировка.
+ * Доменные фильтры добавляются наследованием в модулях.
+ */
+export class PaginationQueryDto extends PageQueryDto {
+  @ApiPropertyOptional({ description: 'Строка полнотекстового поиска' })
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  @MaxLength(200)
+  search?: string;
 }

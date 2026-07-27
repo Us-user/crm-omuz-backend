@@ -229,7 +229,11 @@ class InMemoryStudentsStore {
       lastName: student.lastName,
       accountId: student.account?.id ?? null,
       promotedEmployee: this.promoted.has(id) ? { id: randomUUID() } : null,
-      _count: { groups: student._count.groups },
+      _count: {
+        groups: student._count.groups,
+        journalEntries: 0,
+        coinTransactions: 0,
+      },
     });
   }
 

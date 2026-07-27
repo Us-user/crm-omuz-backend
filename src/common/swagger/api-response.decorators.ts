@@ -37,10 +37,15 @@ export const ApiDataResponse = <TModel extends Type<unknown>>(
     }),
   );
 
-/** Документирует постраничный ответ `{ data: <Model>[], meta }` (ТЗ 3.5). */
+/**
+ * Документирует постраничный ответ `{ data: <Model>[], meta }` (ТЗ 3.5).
+ *
+ * `meta` описывает доменные поля сверх пагинации: ТЗ 3.5 их допускает,
+ * и без описания в документе клиент о них не узнал бы.
+ */
 export const ApiPaginatedResponse = <TModel extends Type<unknown>>(
   model: TModel,
-  options: { description?: string } = {},
+  options: { description?: string; meta?: Record<string, unknown> } = {},
 ) =>
   applyDecorators(
     ApiExtraModels(model),
@@ -51,7 +56,10 @@ export const ApiPaginatedResponse = <TModel extends Type<unknown>>(
         required: ['data', 'meta'],
         properties: {
           data: { type: 'array', items: { $ref: getSchemaPath(model) } },
-          meta: META_SCHEMA,
+          meta: {
+            ...META_SCHEMA,
+            properties: { ...META_SCHEMA.properties, ...(options.meta ?? {}) },
+          },
         },
       },
     }),

@@ -138,7 +138,7 @@ export type StudentDeletionCheck = Prisma.StudentGetPayload<{
     lastName: true;
     accountId: true;
     promotedEmployee: { select: { id: true } };
-    _count: { select: { groups: true } };
+    _count: { select: { groups: true; journalEntries: true; coinTransactions: true } };
   };
 }>;
 
@@ -256,7 +256,13 @@ export class StudentsRepository {
     return this.prisma.branch.findUnique({ where: { id }, select: { id: true } });
   }
 
-  /** Что держит профиль: членства в группах и перевод в сотрудники. */
+  /**
+   * Что держит профиль: членства в группах, отметки в журнале, начисленные
+   * коины и перевод в сотрудники. Журнал и коины считаются отдельно от членств
+   * (ТЗ 5.8, 5.9): отметки ссылаются на профиль, а не на членство, поэтому
+   * у исключённого из состава студента баллы остаются, и удаление профиля
+   * унесло бы их каскадом.
+   */
   findForDeletion(id: string): Promise<StudentDeletionCheck | null> {
     return this.prisma.student.findUnique({
       where: { id },
@@ -266,7 +272,7 @@ export class StudentsRepository {
         lastName: true,
         accountId: true,
         promotedEmployee: { select: { id: true } },
-        _count: { select: { groups: true } },
+        _count: { select: { groups: true, journalEntries: true, coinTransactions: true } },
       },
     });
   }

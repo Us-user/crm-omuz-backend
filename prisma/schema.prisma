@@ -37,6 +37,13 @@
 //   при их появлении убрана — она стала бы вторым источником истины о контакте.
 //   Приглашение (Invite) и блокировка (Block) новых таблиц не заводят: первое
 //   создаёт обычный `Account`, вторая переводит `Account.status` и `Student.status`.
+//
+// Фаза 5 — журнал, успеваемость и коины (ТЗ 5.8, 5.9):
+//   JournalWeek  — неделя журнала группы («NEW WEEK»), финализируемая «Отправить результат»;
+//   JournalDay   — учебный день недели с типом занятия (на `EXAM` приход не начисляется);
+//   JournalEntry — клетка «студент × день»: Att + Score (ДЗ ≤5);
+//   WeekResult   — итог недели по студенту: Bonus / Exam / Sum;
+//   CoinBalance / CoinTransaction — коины: ручное начисление и авто по итогам недели.
 
 generator client {
   provider = "prisma-client-js"
@@ -161,6 +168,17 @@ model Student {
   /// истины о том же контакте, поэтому убрана миграцией с переносом данных.
   parents StudentParent[]
 
+  /// Отметки в журнале (ТЗ 5.8). Ссылка идёт на профиль, а не на членство
+  /// в группе: исключение из состава не должно стирать проставленные баллы.
+  journalEntries JournalEntry[]
+
+  /// Итоги недель — из их среднего выводится общий балл студента (ТЗ 5.8).
+  weekResults WeekResult[]
+
+  /// Коины (ТЗ 5.9): баланс и история начислений.
+  coinBalance      CoinBalance?
+  coinTransactions CoinTransaction[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -220,6 +238,12 @@ model Employee {
 
   /// Заметки, написанные этим сотрудником о студентах (ТЗ 5.3).
   authoredFeedback Feedback[] @relation("FeedbackAuthor")
+
+  /// Недели журнала, финализированные этим сотрудником (ТЗ 5.8).
+  submittedWeeks JournalWeek[] @relation("JournalWeekSubmitter")
+
+  /// Коины, начисленные этим сотрудником вручную (ТЗ 5.9).
+  awardedCoins CoinTransaction[] @relation("CoinAuthor")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -578,6 +602,9 @@ model Group {
   /// Обратная сторона `GroupStudent.transferredFromGroup`; отдельного экрана
   /// у неё нет, но без неё Prisma не назовёт вторую связь на ту же модель.
   transferredStudents GroupStudent[] @relation("GroupStudentTransfer")
+
+  /// Журнал группы — недели с днями, отметками и итогами (ТЗ 5.8).
+  journalWeeks JournalWeek[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -991,4 +1018,207 @@ model StudentParent {
   /// Обратный обход: дети этого родителя.
   @@index([parentId])
   @@map("student_parents")
+}
+
+// ───────────────── Журнал, успеваемость и коины (ТЗ 5.8, 5.9) ─────────────────
+
+/// Отметка посещаемости за день (ТЗ 5.8: «Att»).
+///
+/// `LATE` — отдельная отметка, а не разновидность `PRESENT`: дашборд (ТЗ 5.2)
+/// строит график «Attendance (Late/Absent)», и склеив их, различить эти два
+/// случая было бы нечем. На баллы опоздание влияет как приход: человек пришёл,
+/// а лишать его балла ТЗ 5.8 не просит.
+enum AttendanceMark {
+  PRESENT
+  LATE
+  ABSENT
+}
+
+/// Откуда взялись коины (ТЗ 5.9).
+enum CoinSource {
+  /// Ручное начисление сотрудником с обязательной причиной.
+  MANUAL
+  /// Автоначисление по итогам недели при финализации.
+  WEEK_RESULT
+}
+
+/// Неделя журнала группы (ТЗ 5.8: «Недели (NEW WEEK)»).
+///
+/// Дни недели задаёт оператор (решение сессии 0018), а не расписание группы:
+/// слоты (`ScheduleSlot`) повторяются еженедельно и описывают план, журнал же
+/// фиксирует **факт** — занятие могло не состояться или пройти не по плану.
+model JournalWeek {
+  id String @id @default(uuid()) @db.Uuid
+
+  groupId String @db.Uuid
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// Порядковый номер недели в группе — «Week 1», «Week 2» на экране.
+  /// Назначается системой (`max + 1`), а не оператором: два способа задать
+  /// один и тот же порядок разошлись бы на первой же вставке недели в середину.
+  weekNumber Int
+
+  /// Начало недели. Учебные дни лежат отдельными строками и обязаны
+  /// укладываться в семь суток от этой даты — иначе «неделя» перестала бы
+  /// означать что-либо, а `Sum` считался бы по произвольному отрезку.
+  startDate DateTime @db.Date
+
+  /// Финализация (ТЗ 5.8: «Отправить результат»): неделя блокируется,
+  /// коины начисляются, отчёт уходит Директору. `null` — неделя открыта.
+  submittedAt   DateTime?
+  submittedById String?   @db.Uuid
+  submittedBy   Employee? @relation("JournalWeekSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
+
+  days    JournalDay[]
+  results WeekResult[]
+  /// Коины, начисленные по итогам этой недели (ТЗ 5.9).
+  coins   CoinTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([groupId, weekNumber])
+  /// Журнал группы читается по порядку недель.
+  @@index([groupId, startDate])
+  @@map("journal_weeks")
+}
+
+/// Учебный день внутри недели журнала (ТЗ 5.8: «по дням»).
+///
+/// Отдельная таблица, а не набор дат в `JournalEntry`: без неё день, в который
+/// занятие было, но никого ещё не отметили, не существовал бы, и «отметить
+/// всех присутствующими» нечего было бы заполнять.
+model JournalDay {
+  id String @id @default(uuid()) @db.Uuid
+
+  weekId String      @db.Uuid
+  week   JournalWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
+
+  date DateTime @db.Date
+
+  /// Тип занятия (ТЗ 5.6). На `EXAM` приход не начисляется (ТЗ 5.8) — балл
+  /// за экзамен идёт отдельным слагаемым `WeekResult.exam`.
+  type LessonType @default(LECTURE)
+
+  entries JournalEntry[]
+
+  createdAt DateTime @default(now())
+
+  /// Один день в неделе ровно один раз: две строки на одну дату означали бы
+  /// два прихода за одно занятие.
+  @@unique([weekId, date])
+  @@map("journal_days")
+}
+
+/// Клетка журнала: посещаемость и балл за ДЗ конкретного студента в конкретный
+/// день (ТЗ 5.8: «Att + Score»).
+model JournalEntry {
+  id String @id @default(uuid()) @db.Uuid
+
+  dayId String     @db.Uuid
+  day   JournalDay @relation(fields: [dayId], references: [id], onDelete: Cascade)
+
+  /// Ссылка на **студента**, а не на членство `GroupStudent` (решение сессии 0018):
+  /// исключение из состава (ТЗ 5.5) не должно каскадом стирать уже проставленные
+  /// баллы — журнал остаётся полным. Группа известна из недели.
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  /// `null` — клетка ещё не отмечена. «Не отмечен» и «отсутствовал» — разные
+  /// состояния: первое не должно попадать в отчёт по пропускам (ТЗ 5.2).
+  attendance AttendanceMark?
+
+  /// Балл за домашнее задание, 0…5 (ТЗ 5.8). `null` — не проверено.
+  score Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([dayId, studentId])
+  /// Обратный обход: успеваемость конкретного студента (ТЗ 5.3: Performance).
+  @@index([studentId])
+  @@map("journal_entries")
+}
+
+/// Итог недели по студенту (ТЗ 5.8: «в конце недели Bonus / Exam / Sum»).
+model WeekResult {
+  weekId String      @db.Uuid
+  week   JournalWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
+
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  /// Ручные слагаемые недели: премия и балл за экзамен.
+  bonus Int @default(0)
+  exam  Int @default(0)
+
+  /// Итог недели: `Σ(приходы) + Σ(ДЗ) + Exam + Bonus` (ТЗ 5.8).
+  ///
+  /// Хранится, а не считается при каждом чтении: общий балл студента — это
+  /// среднее `sum` по всем неделям (ТЗ 5.8), и рейтинг центра (ТЗ 5.13)
+  /// пришлось бы собирать обходом всех клеток журнала. Пересчитывается той же
+  /// транзакцией, что и любое изменение недели, — второго источника истины
+  /// не возникает.
+  sum Int @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@id([weekId, studentId])
+  /// Обратный обход: все итоги студента — из них выводится общий балл.
+  @@index([studentId])
+  @@map("week_results")
+}
+
+/// Баланс коинов студента (ТЗ 5.9).
+///
+/// Списание запрещено, поэтому баланс только растёт и равен сумме начислений.
+/// Хранится ради списков и рейтингов: агрегат по истории на каждую строку
+/// экрана — это запрос на строку.
+model CoinBalance {
+  studentId String  @id @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  balance Int @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("coin_balances")
+}
+
+/// Начисление коинов (ТЗ 5.9). Строка истории у студента.
+model CoinTransaction {
+  id String @id @default(uuid()) @db.Uuid
+
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  /// Всегда положительное: списание коинов запрещено (ТЗ 5.9), поэтому
+  /// отрицательных строк в истории не бывает по определению.
+  amount Int
+
+  /// Причина обязательна при ручном начислении (ТЗ 5.9); у автоматического
+  /// это описание недели, по итогам которой оно прошло.
+  reason String
+
+  source CoinSource
+
+  /// Неделя, по итогам которой начислено (`source = WEEK_RESULT`).
+  /// `SET NULL`: удаление недели не повод стирать уже выданные коины —
+  /// у студента их не отнять.
+  weekId String?      @db.Uuid
+  week   JournalWeek? @relation(fields: [weekId], references: [id], onDelete: SetNull)
+
+  /// Кто начислил. `null` — автоначисление или удалённый профиль сотрудника.
+  authorId String?   @db.Uuid
+  author   Employee? @relation("CoinAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  /// Одно автоначисление на студента за неделю. У ручных начислений `weekId`
+  /// равен `null`, а NULL-ы в PostgreSQL друг с другом не конфликтуют —
+  /// ограничение работает как частичное и ручных начислений не задевает.
+  @@unique([weekId, studentId])
+  /// История студента читается свежими сверху.
+  @@index([studentId, createdAt])
+  @@map("coin_transactions")
 }
