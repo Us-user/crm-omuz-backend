@@ -1,6 +1,7 @@
 export * from './csv/csv';
 export * from './dates/day-time';
 export * from './dates/iso-date';
+export * from './dates/iso-month';
 export * from './dto/paginated';
 export * from './dto/pagination-query.dto';
 export * from './errors/business-rule.exception';
