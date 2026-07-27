@@ -213,6 +213,20 @@
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30281544642`, коммит `19b5713`, зелёный):
+- `npx prisma migrate deploy` — все **шестнадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260730000000_phase6_avans_requests`: enum `AvansStatus`,
+  таблица `avans_requests`, три индекса и три внешних ключа (`CASCADE` на сотрудника
+  заявки, `SET NULL` на автора и на рассмотревшего) в БД разворачиваются;
+- `npm test` — 906 тестов, 48 наборов;
+- `npm run test:e2e` целиком — **22 набора, 672 теста** (было 21 и 631), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Employees + MentorLevels + **Avans** + Branches + Rooms +
+  Courses + Groups + GroupJournal + GroupMentors + GroupSchedule + GroupStudents +
+  Syllabus) против настоящих PostgreSQL и Redis: приложение с новым модулем поднимается
+  и подтверждает `database: up`.
+
 **НЕ проверено (честно):**
 - **Prisma-запросы `AvansRepository` на настоящей БД не выполнялись.** В e2e репозиторий
   подменён хранилищем в памяти. Не проверены: `findFirst` по паре `(id, employeeId)`,
@@ -281,6 +295,7 @@ Timetable, Courses, SMS mailings). Перед ним стоит решить г�
 
 ## Коммит
 
-- `<хеш>` — «Фаза 6: заявки на аванс».
+- `19b5713` — «Фаза 6: заявки на аванс» (16 файлов, +2225 −5).
+- На `19b5713` прогнан зелёный CI (run `30281544642`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
