@@ -257,6 +257,20 @@
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30273792808`, коммит `78ad0a6`, зелёный за 2м07с):
+- `npx prisma migrate deploy` — все **пятнадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260729180000_phase6_mentor_levels`: две таблицы,
+  уникальный индекс `(employeeId, month)`, три обычных индекса и два внешних ключа
+  (`CASCADE` на сотрудника, `RESTRICT` на ступень) в БД разворачиваются;
+- `npm test` — 881 тест, 47 наборов;
+- `npm run test:e2e` целиком — **21 набор, 631 тест** (было 20 и 583), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Employees + **MentorLevels** + Branches + Rooms +
+  Courses + Groups + GroupJournal + GroupMentors + GroupSchedule + GroupStudents +
+  Syllabus) против настоящих PostgreSQL и Redis: приложение с новым модулем поднимается
+  и подтверждает `database: up`.
+
 **НЕ проверено (честно):**
 - **Prisma-запросы `MentorLevelsRepository` на настоящей БД не выполнялись.** В e2e
   репозиторий подменён хранилищем в памяти. Не проверены: `upsert` по составному
@@ -328,6 +342,7 @@ server`) — известное состояние окружения с сес�
 
 ## Коммит
 
-- <хеш> — «Фаза 6: уровни ментора и история по месяцам».
+- `78ad0a6` — «Фаза 6: уровни ментора и история по месяцам» (26 файлов, +3220 −5).
+- На `78ad0a6` прогнан зелёный CI (run `30273792808`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
