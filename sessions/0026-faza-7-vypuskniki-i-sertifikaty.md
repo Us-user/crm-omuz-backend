@@ -282,7 +282,22 @@
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
-**Проверено в CI после пуша** (см. раздел «Коммит»).
+**Проверено в CI после пуша** (run `30300790983`, коммит `8861679`, зелёный):
+- `npx prisma migrate deploy` — все **девятнадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260731000000_phase7_graduates`: enum
+  `GraduateEmployment`, таблица `graduates`, уникальный индекс `(groupId, studentId)`,
+  уникальный индекс по `certificateSerial`, три обычных индекса и три внешних ключа
+  (`RESTRICT` на студента и группу, `SET NULL` на выдавшего сертификат) в БД
+  разворачиваются;
+- `npm test` — 1102 теста, 55 наборов;
+- `npm run test:e2e` целиком — **26 наборов, 834 теста** (было 25 и 792), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Leaders + LeftCourses + **Graduates** + Employees +
+  MentorCabinet + MentorLevels + Avans + Branches + Rooms + Courses + Groups +
+  GroupJournal + GroupMentors + GroupSchedule + GroupStudents + Syllabus) против
+  настоящих PostgreSQL и Redis: приложение поднимается и подтверждает `database: up` —
+  то есть `GroupsModule`, начавший импортировать `GraduatesModule`, DI не сломал.
 
 **НЕ проверено (честно):**
 - **Prisma-запросы `GraduatesRepository` на настоящей БД не выполнялись.** В e2e
@@ -373,6 +388,7 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- <хеш> — «Фаза 7: выпускники, автовыпуск и сертификаты».
+- `8861679` — «Фаза 7: выпускники, автовыпуск и сертификаты» (31 файл, +4336 −14).
+- На `8861679` прогнан зелёный CI (run `30300790983`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
