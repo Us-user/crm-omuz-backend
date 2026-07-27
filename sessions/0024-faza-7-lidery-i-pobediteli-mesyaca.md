@@ -259,7 +259,22 @@ UUID. Это данные теста, а не код: в наборе конст
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
-**Проверено в CI после пуша** (см. раздел «Коммит»).
+**Проверено в CI после пуша** (run `30290367856`, коммит `a61313c`, зелёный):
+- `npx prisma migrate deploy` — все **семнадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260730120000_phase7_monthly_winners`: таблица
+  `monthly_winners`, уникальный индекс `(month, studentId)`, два обычных индекса
+  и два внешних ключа (`RESTRICT` на студента, `SET NULL` на закрывшего месяц)
+  в БД разворачиваются;
+- `npm test` — 997 тестов, 51 набор;
+- `npm run test:e2e` целиком — **24 набора, 762 теста** (было 23 и 719), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + **Leaders** + Employees + MentorCabinet + MentorLevels +
+  Avans + Branches + Rooms + Courses + Groups + GroupJournal + GroupMentors +
+  GroupSchedule + GroupStudents + Syllabus) против настоящих PostgreSQL и Redis:
+  приложение с новым модулем поднимается и подтверждает `database: up`. Заодно
+  на реальной БД отработала синхронизация каталога прав с добавленным кодом
+  `Permission.Leaders.ManageWinners` — иначе `app.init()` упал бы.
 
 **НЕ проверено (честно):**
 - **Prisma-запросы `LeadersRepository` на настоящей БД не выполнялись.** В e2e репозиторий
@@ -341,6 +356,7 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- <хеш> — «Фаза 7: лидеры, рейтинг и победители месяца».
+- `a61313c` — «Фаза 7: лидеры, рейтинг и победители месяца» (27 файлов, +3223 −13).
+- На `a61313c` прогнан зелёный CI (run `30290367856`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
