@@ -251,7 +251,19 @@
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
-**Проверено в CI после пуша** (см. раздел «Коммит»).
+**Проверено в CI после пуша** (run `30296315491`, коммит `4b4fe94`, зелёный):
+- `npx prisma migrate deploy` — все **восемнадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260730180000_phase7_left_course_mentor`: колонка
+  `mentorAtLeaveId`, два индекса (`(status, statusChangedAt)` и `(mentorAtLeaveId)`)
+  и внешний ключ `SET NULL` на сотрудника в БД разворачиваются;
+- `npm test` — 1044 теста, 53 набора;
+- `npm run test:e2e` целиком — **25 наборов, 792 теста** (было 24 и 762), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Leaders + **LeftCourses** + Employees + MentorCabinet +
+  MentorLevels + Avans + Branches + Rooms + Courses + Groups + GroupJournal +
+  GroupMentors + GroupSchedule + GroupStudents + Syllabus) против настоящих PostgreSQL
+  и Redis: приложение с новым модулем поднимается и подтверждает `database: up`.
 
 **НЕ проверено (честно):**
 - **Prisma-запросы `LeftCoursesRepository` на настоящей БД не выполнялись.** В e2e
@@ -330,5 +342,7 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- <хеш> — «Фаза 7: покинувшие курсы».
+- `4b4fe94` — «Фаза 7: покинувшие курсы» (24 файла, +3042 −16).
+- На `4b4fe94` прогнан зелёный CI (run `30296315491`).
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
