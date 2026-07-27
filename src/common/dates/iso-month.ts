@@ -42,14 +42,24 @@ export function parseIsoMonth(value: string, field: string): Date {
 export const formatIsoMonth = (month: Date): string => month.toISOString().slice(0, 7);
 
 /**
+ * Месяц, сдвинутый на `delta` месяцев (в обе стороны).
+ *
+ * Арифметику ведёт `Date.UTC`: он сам переносит год через границу декабря
+ * и не зависит от того, сколько дней в исходном и в целевом месяце —
+ * складывать дни пришлось бы с оглядкой на 28/29/30/31.
+ *
+ * Нужен там, где период задаётся длиной, а не двумя концами: помесячный график
+ * покинувших курсы (ТЗ 5.12) по умолчанию показывает последний год.
+ */
+export const shiftIsoMonth = (month: Date, delta: number): Date =>
+  new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + delta, 1));
+
+/**
  * Первое число **следующего** месяца — правая, не включающая граница отрезка.
  *
  * Нужна там, где отбираются записи «за месяц» по обычной дате: недели журнала
  * лежат в `startDate` (`@db.Date`), и условие `gte: месяц, lt: следующий`
  * не зависит от того, сколько в месяце дней. Считать `lte: последний день`
  * значило бы выводить это число самому — 28, 29, 30 или 31.
- *
- * `Date.UTC` переносит год сам: декабрь + 1 = январь следующего года.
  */
-export const nextIsoMonth = (month: Date): Date =>
-  new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1));
+export const nextIsoMonth = (month: Date): Date => shiftIsoMonth(month, 1);

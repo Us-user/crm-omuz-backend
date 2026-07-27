@@ -20,6 +20,7 @@ const OTHER_GROUP_ID = '22222222-2222-2222-2222-222222222222';
 const COURSE_ID = '33333333-3333-3333-3333-333333333333';
 const STUDENT_ID = '44444444-4444-4444-4444-444444444444';
 const SECOND_STUDENT_ID = '55555555-5555-5555-5555-555555555555';
+const MENTOR_ID = '66666666-6666-6666-6666-666666666666';
 
 const group = (overrides: Partial<StudentGroup> = {}): StudentGroup => ({
   id: GROUP_ID,
@@ -92,6 +93,7 @@ describe('GroupStudentsService', () => {
       | 'findOne'
       | 'findMemberships'
       | 'findCompetingMemberships'
+      | 'findLeaveMentor'
       | 'countActive'
       | 'enroll'
       | 'changeStatus'
@@ -122,6 +124,9 @@ describe('GroupStudentsService', () => {
       findOne: jest.fn().mockResolvedValue(row()),
       findMemberships: jest.fn().mockResolvedValue([]),
       findCompetingMemberships: jest.fn().mockResolvedValue([]),
+      // Ведущий ментор группы — снимок «ментор на момент ухода» (ТЗ 5.12).
+      // По умолчанию он есть: случай «группа без ведущего» задаётся отдельно.
+      findLeaveMentor: jest.fn().mockResolvedValue(MENTOR_ID),
       countActive: jest.fn().mockResolvedValue(1),
       enroll: jest.fn().mockResolvedValue([row()]),
       changeStatus: jest.fn().mockResolvedValue([row()]),
@@ -309,8 +314,55 @@ describe('GroupStudentsService', () => {
         GroupStudentStatus.LEFT,
         'Переехал в другой город',
         expect.any(Date),
+        MENTOR_ID,
       );
     });
+
+    it('уход фиксирует ментора группы снимком (ТЗ 5.12)', async () => {
+      await service.changeStatus(GROUP_ID, body);
+
+      expect(repository.findLeaveMentor).toHaveBeenCalledWith(GROUP_ID);
+      expect(repository.changeStatus).toHaveBeenCalledWith(
+        GROUP_ID,
+        [STUDENT_ID],
+        GroupStudentStatus.LEFT,
+        expect.any(String),
+        expect.any(Date),
+        MENTOR_ID,
+      );
+    });
+
+    it('группа без ведущего ментора уходит в снимок с null, а не с догадкой', async () => {
+      repository.findLeaveMentor.mockResolvedValue(null);
+
+      await service.changeStatus(GROUP_ID, body);
+
+      expect(repository.changeStatus).toHaveBeenCalledWith(
+        GROUP_ID,
+        [STUDENT_ID],
+        GroupStudentStatus.LEFT,
+        expect.any(String),
+        expect.any(Date),
+        null,
+      );
+    });
+
+    it.each([GroupStudentStatus.ACTIVE, GroupStudentStatus.FINISHED])(
+      'статус %s снимает снимок ментора и не спрашивает его у группы',
+      async (status) => {
+        await service.changeStatus(GROUP_ID, { ...body, status });
+
+        expect(repository.findLeaveMentor).not.toHaveBeenCalled();
+        expect(repository.changeStatus).toHaveBeenCalledWith(
+          GROUP_ID,
+          [STUDENT_ID],
+          status,
+          expect.any(String),
+          expect.any(Date),
+          null,
+        );
+      },
+    );
 
     it('отдаёт новый статус и «набрано» после смены', async () => {
       repository.countActive.mockResolvedValue(9);

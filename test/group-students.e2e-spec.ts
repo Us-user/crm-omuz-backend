@@ -36,6 +36,9 @@ import { buildOpenApiDocument } from 'src/swagger';
 /** `{ data }` ответа с ожидаемым типом — тела supertest типизированы как `any`. */
 const dataOf = <T>(response: { body: unknown }): T => (response.body as { data: T }).data;
 
+/** Ведущий ментор группы — его фиксирует снимок «ментор на момент ухода» (ТЗ 5.12). */
+const MENTOR_ID = randomUUID();
+
 /** Права аккаунта в памяти вместо трёх таблиц RBAC (как в `catalog.e2e-spec.ts`). */
 class InMemoryRbacRepository {
   private readonly codesByAccount = new Map<string, string[]>();
@@ -234,6 +237,15 @@ class InMemoryStudentsStore {
           membership.groupId === groupId && membership.status === GroupStudentStatus.ACTIVE,
       ).length,
     );
+  }
+
+  /**
+   * Ведущий ментор группы — снимок «ментор на момент ухода» (ТЗ 5.12).
+   * Здесь он не проверяется: этот набор про правила состава, а сам снимок
+   * и его чтение витриной покрыты в `left-courses.e2e-spec.ts`.
+   */
+  findLeaveMentor(): Promise<string | null> {
+    return Promise.resolve(MENTOR_ID);
   }
 
   enroll(groupId: string, studentIds: string[], enrolledAt: Date): Promise<GroupStudentRow[]> {
@@ -441,6 +453,7 @@ describe('Состав группы (e2e, хранилище в памяти)', 
         countActive: (groupId: string) => store.countActive(groupId),
         enroll: (groupId: string, studentIds: string[], enrolledAt: Date) =>
           store.enroll(groupId, studentIds, enrolledAt),
+        findLeaveMentor: () => store.findLeaveMentor(),
         changeStatus: (
           groupId: string,
           studentIds: string[],

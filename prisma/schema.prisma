@@ -269,6 +269,11 @@ model Employee {
   /// Месяцы, закрытые этим сотрудником (ТЗ 5.13: снимок победителей).
   closedMonthlyWinners MonthlyWinner[] @relation("MonthlyWinnerAuthor")
 
+  /// Уходы студентов, при которых этот сотрудник был ментором группы
+  /// (ТЗ 5.12: «ментор на момент ухода»). Снимок — он не меняется от того,
+  /// что сотрудника позже сняли с группы.
+  leaveMentorships GroupStudent[] @relation("GroupStudentLeaveMentor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -927,6 +932,20 @@ model GroupStudent {
   transferredFromGroupId String? @db.Uuid
   transferredFromGroup   Group?  @relation("GroupStudentTransfer", fields: [transferredFromGroupId], references: [id], onDelete: SetNull)
 
+  /// Ментор группы **на момент ухода** (ТЗ 5.12: «группа/ментор на момент ухода»).
+  ///
+  /// Это снимок, а не вычисляемое значение: ментора можно было бы выводить
+  /// из состава менторов группы, но тогда смена преподавателя в ноябре
+  /// переписала бы отчёт за сентябрь — то же соображение, по которому
+  /// `MonthlyWinner` сделан таблицей, а не расчётом на лету (сессия 0024).
+  ///
+  /// Заполняется только при переводе членства в `LEFT` и снимается при любом
+  /// другом статусе: у продолжающего учиться «ментора на момент ухода» нет.
+  /// `SET NULL` — удаление профиля сотрудника не повод стирать строку ухода:
+  /// она про студента.
+  mentorAtLeaveId String?   @db.Uuid
+  mentorAtLeave   Employee? @relation("GroupStudentLeaveMentor", fields: [mentorAtLeaveId], references: [id], onDelete: SetNull)
+
   enrolledAt DateTime @default(now())
 
   createdAt DateTime @default(now())
@@ -939,9 +958,13 @@ model GroupStudent {
   @@id([groupId, studentId])
   /// Обратный обход: группы конкретного студента (кабинет студента, ТЗ 5.3).
   @@index([studentId])
-  /// Под «набрано/вместимость» и выборку покинувших курс (ТЗ 5.5, 5.12).
+  /// Под «набрано/вместимость» и секцию Left course карточки группы (ТЗ 5.5, 5.12).
   @@index([groupId, status])
+  /// Витрина покинувших курсы (ТЗ 5.12) читает уходы **по всему центру**
+  /// за период: отбор идёт по статусу и дате ухода, а не по группе.
+  @@index([status, statusChangedAt])
   @@index([transferredFromGroupId])
+  @@index([mentorAtLeaveId])
   @@map("group_students")
 }
 

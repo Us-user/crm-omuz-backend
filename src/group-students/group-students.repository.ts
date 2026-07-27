@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma, StudentStatus } from '@prisma/client';
-import { GroupStudentStatus } from '@prisma/client';
+import { GroupMentorRole, GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -251,6 +251,29 @@ export class GroupStudentsRepository {
     });
   }
 
+  /**
+   * Ведущий ментор группы — тот, кто попадёт в снимок «ментор на момент ухода»
+   * (ТЗ 5.12).
+   *
+   * Берётся роль `TEACHING`: «у кого он учился» — это про того, кто вёл занятия,
+   * а не про сопровождающего. Если ведущих несколько, выбирается назначенный
+   * раньше — правило детерминированное и не выдумывает старшинства; порядок
+   * дополнительно закреплён идентификатором, чтобы два назначения, сделанные
+   * в одну и ту же миллисекунду, не давали разный ответ от запроса к запросу.
+   *
+   * `null` — законное состояние: группа без ведущего ментора бывает, и снимок
+   * тогда честно пуст, а не подставляет случайного сотрудника.
+   */
+  async findLeaveMentor(groupId: string): Promise<string | null> {
+    const mentor = await this.prisma.groupMentor.findFirst({
+      where: { groupId, role: GroupMentorRole.TEACHING },
+      orderBy: [{ assignedAt: 'asc' }, { employeeId: 'asc' }],
+      select: { employeeId: true },
+    });
+
+    return mentor?.employeeId ?? null;
+  }
+
   /** «Набрано» из «Required students = набрано/вместимость» (ТЗ 5.5). */
   countActive(groupId: string): Promise<number> {
     return this.prisma.groupStudent.count({
@@ -281,6 +304,9 @@ export class GroupStudentsRepository {
               statusReason: null,
               statusChangedAt: null,
               transferredFromGroupId: null,
+              // Снимок «ментор на момент ухода» снимается вместе с причиной
+              // и датой: вернувшийся студент курса не покидал.
+              mentorAtLeaveId: null,
               enrolledAt,
             },
             select: GROUP_STUDENT_SELECT,
@@ -292,13 +318,22 @@ export class GroupStudentsRepository {
     });
   }
 
-  /** Массовая смена статуса участия с обязательной причиной (ТЗ 5.5). */
+  /**
+   * Массовая смена статуса участия с обязательной причиной (ТЗ 5.5).
+   *
+   * `mentorAtLeaveId` пишется **всегда**, а не только при уходе: сервис
+   * подставляет сюда ведущего ментора для `LEFT` и `null` для всех остальных
+   * статусов. Иначе у студента, вернувшегося в обучение, остался бы висеть
+   * снимок прошлого ухода — и он попал бы в отчёт по покинувшим (ТЗ 5.12)
+   * с ментором, от которого никуда не уходил.
+   */
   changeStatus(
     groupId: string,
     studentIds: string[],
     status: GroupStudentStatus,
     reason: string,
     changedAt: Date,
+    mentorAtLeaveId: string | null,
   ): Promise<GroupStudentRow[]> {
     return this.prisma.$transaction(async (tx) => {
       const rows: GroupStudentRow[] = [];
@@ -307,7 +342,7 @@ export class GroupStudentsRepository {
         rows.push(
           await tx.groupStudent.update({
             where: { groupId_studentId: { groupId, studentId } },
-            data: { status, statusReason: reason, statusChangedAt: changedAt },
+            data: { status, statusReason: reason, statusChangedAt: changedAt, mentorAtLeaveId },
             select: GROUP_STUDENT_SELECT,
           }),
         );
@@ -334,6 +369,10 @@ export class GroupStudentsRepository {
           status: GroupStudentStatus.TRANSFERRED,
           statusReason: input.reason,
           statusChangedAt: input.changedAt,
+          // Переведённый курс не покидал (решение сессии 0012), поэтому
+          // «ментора на момент ухода» у него нет — в том числе если строка
+          // до перевода стояла в `LEFT`.
+          mentorAtLeaveId: null,
         },
       });
 
@@ -354,6 +393,7 @@ export class GroupStudentsRepository {
               statusReason: null,
               statusChangedAt: null,
               transferredFromGroupId: input.fromGroupId,
+              mentorAtLeaveId: null,
               enrolledAt: input.changedAt,
             },
             select: GROUP_STUDENT_SELECT,

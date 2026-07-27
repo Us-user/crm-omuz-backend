@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
-import { formatIsoMonth, nextIsoMonth, parseIsoMonth } from './iso-month';
+import { formatIsoMonth, nextIsoMonth, parseIsoMonth, shiftIsoMonth } from './iso-month';
 
 describe('parseIsoMonth', () => {
   it('разбирает месяц в его первое число (полночь UTC)', () => {
@@ -67,6 +67,43 @@ describe('nextIsoMonth', () => {
   it('всегда указывает на полночь первого числа', () => {
     expect(nextIsoMonth(parseIsoMonth('2026-06', 'month')).toISOString()).toBe(
       '2026-07-01T00:00:00.000Z',
+    );
+  });
+});
+
+describe('shiftIsoMonth', () => {
+  const shift = (month: string, delta: number): string =>
+    formatIsoMonth(shiftIsoMonth(parseIsoMonth(month, 'month'), delta));
+
+  it('сдвигает вперёд и назад', () => {
+    expect(shift('2026-06', 3)).toBe('2026-09');
+    expect(shift('2026-06', -3)).toBe('2026-03');
+  });
+
+  it('переносит год в обе стороны', () => {
+    expect(shift('2026-11', 3)).toBe('2027-02');
+    expect(shift('2026-02', -3)).toBe('2025-11');
+  });
+
+  // Год назад от июля — это август прошлого года, если считать двенадцать
+  // месяцев включительно: ровно так строится период графика по умолчанию.
+  it('на одиннадцать месяцев назад даёт начало годового окна', () => {
+    expect(shift('2026-07', -11)).toBe('2025-08');
+  });
+
+  it('нулевой сдвиг оставляет месяц на месте', () => {
+    expect(shift('2026-06', 0)).toBe('2026-06');
+  });
+
+  it('не зависит от длины месяца — февраль високосного года тоже', () => {
+    expect(shift('2024-02', 1)).toBe('2024-03');
+    expect(shift('2026-01', 1)).toBe('2026-02');
+    expect(shift('2026-03', -1)).toBe('2026-02');
+  });
+
+  it('всегда указывает на полночь первого числа', () => {
+    expect(shiftIsoMonth(parseIsoMonth('2026-06', 'month'), -5).toISOString()).toBe(
+      '2026-01-01T00:00:00.000Z',
     );
   });
 });

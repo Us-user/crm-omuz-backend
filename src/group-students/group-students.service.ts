@@ -154,12 +154,22 @@ export class GroupStudentsService {
       await this.assertFreeOfCourse(group, dto.studentIds, [groupId]);
     }
 
+    // «Ментор на момент ухода» (ТЗ 5.12) фиксируется снимком именно здесь:
+    // это единственный момент, когда состав менторов группы ещё описывает
+    // то, из-под кого студент ушёл. Один запрос на всю пачку — статус
+    // и группа у неё общие.
+    const mentorAtLeaveId =
+      dto.status === GroupStudentStatus.LEFT
+        ? await this.repository.findLeaveMentor(groupId)
+        : null;
+
     const students = await this.repository.changeStatus(
       groupId,
       dto.studentIds,
       dto.status,
       dto.reason,
       new Date(),
+      mentorAtLeaveId,
     );
     await this.syncProfileStatuses(dto.studentIds);
     const enrolledCount = await this.repository.countActive(groupId);
