@@ -81,7 +81,6 @@ export class StudentsService {
       gender: dto.gender ?? null,
       address: emptyToNull(dto.address),
       email: emptyToNull(dto.email),
-      parentPhone: this.phones.normalizeOptional(dto.parentPhone, 'parentPhone') ?? null,
       extraPhones: this.normalizeExtraPhones(dto.extraPhones) ?? [],
       telegram: emptyToNull(dto.telegram),
       photoUrl: emptyToNull(dto.photoUrl),
@@ -115,10 +114,6 @@ export class StudentsService {
       gender: dto.gender,
       address: emptyToNullPatch(dto.address),
       email: emptyToNullPatch(dto.email),
-      parentPhone:
-        dto.parentPhone === undefined
-          ? undefined
-          : (this.phones.normalizeOptional(dto.parentPhone, 'parentPhone') ?? null),
       extraPhones: this.normalizeExtraPhones(dto.extraPhones),
       telegram: emptyToNullPatch(dto.telegram),
       photoUrl: emptyToNullPatch(dto.photoUrl),
@@ -265,7 +260,13 @@ const toDto = (row: StudentRow): StudentDto => ({
   gender: row.gender,
   address: row.address,
   email: row.email,
-  parentPhone: row.parentPhone,
+  parents: row.parents.map(({ parent, relation }) => ({
+    id: parent.id,
+    firstName: parent.firstName,
+    lastName: parent.lastName,
+    phone: parent.phone,
+    relation,
+  })),
   extraPhones: row.extraPhones,
   telegram: row.telegram,
   photoUrl: row.photoUrl,

@@ -33,6 +33,10 @@ const OPTIONAL_ISO_DATE = /^$|^\d{4}-\d{2}-\d{2}$/;
  * Аккаунта здесь нет намеренно: ТЗ 5.3 называет его опциональным и выдаёт
  * отдельным действием «Invite». Профиль заводится раньше логина — человек может
  * прийти по записи и получить доступ позже.
+ *
+ * Телефона родителя здесь тоже нет: форма ТЗ 5.3 его не перечисляет, а контакты
+ * родителей ведёт `POST /students/{id}/parents` (ТЗ 4). Поле в этой форме стало бы
+ * вторым способом записать тот же контакт — и разошлось бы со списком родителей.
  */
 export class CreateStudentDto {
   @ApiProperty({ example: 'Нигина', minLength: 2, maxLength: 100 })
@@ -91,16 +95,6 @@ export class CreateStudentDto {
   @ValidateIf((_, value: unknown) => value !== '')
   @IsEmail()
   email?: string;
-
-  @ApiPropertyOptional({
-    example: '+992 90 765-43-21',
-    description: 'Телефон родителя или опекуна (ТЗ 3.1). Пустая строка очищает поле.',
-  })
-  @IsOptional()
-  @Transform(trimString)
-  @IsString()
-  @MaxLength(30)
-  parentPhone?: string;
 
   @ApiPropertyOptional({
     type: [String],

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { AccountStatus, Gender, StudentStatus } from '@prisma/client';
+import { AccountStatus, Gender, ParentRelation, StudentStatus } from '@prisma/client';
 
 /** Филиал студента в карточке (ТЗ 3.3) — без второго запроса за названием. */
 export class StudentBranchDto {
@@ -27,6 +27,27 @@ export class StudentAccountDto {
 
   @ApiProperty({ enum: AccountStatus })
   status!: AccountStatus;
+}
+
+/**
+ * Родитель или опекун в карточке студента (ТЗ 4). Здесь — только контакт;
+ * ведение списка (добавление, правка, отвязка) живёт в `/students/{id}/parents`.
+ */
+export class StudentParentContactDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Гулнора' })
+  firstName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Каримова' })
+  lastName!: string | null;
+
+  @ApiProperty({ example: '+992907654321' })
+  phone!: string;
+
+  @ApiPropertyOptional({ enum: ParentRelation, nullable: true })
+  relation!: ParentRelation | null;
 }
 
 /** Действующее членство студента — «Group» и «Course» из фильтров ТЗ 5.3. */
@@ -70,12 +91,13 @@ export class StudentDto {
   @ApiPropertyOptional({ nullable: true, example: 'nigina@mail.tj' })
   email!: string | null;
 
-  @ApiPropertyOptional({
-    nullable: true,
-    example: '+992907654321',
-    description: 'Телефон родителя',
+  @ApiProperty({
+    type: [StudentParentContactDto],
+    description:
+      'Родители и опекуны (ТЗ 4). Прежняя колонка `parentPhone` убрана: контакт ' +
+      'родителя живёт в общей записи, найти которую можно по телефону.',
   })
-  parentPhone!: string | null;
+  parents!: StudentParentContactDto[];
 
   @ApiProperty({ type: [String], example: ['+992921112233'], description: 'Доп. телефоны, E.164' })
   extraPhones!: string[];

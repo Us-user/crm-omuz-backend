@@ -118,7 +118,7 @@ class InMemoryStudentsStore {
       gender: null,
       address: null,
       email: null,
-      parentPhone: null,
+      parents: [],
       extraPhones: [],
       telegram: null,
       photoUrl: null,
@@ -298,7 +298,7 @@ interface StudentBody {
   birthDate: string | null;
   gender: Gender | null;
   email: string | null;
-  parentPhone: string | null;
+  parents: { id: string; firstName: string | null; phone: string; relation: string | null }[];
   extraPhones: string[];
   telegram: string | null;
   notes: string | null;
@@ -450,7 +450,6 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
           gender: Gender.FEMALE,
           address: 'ул. Рудаки, 105',
           email: 'Nigina@Mail.TJ',
-          parentPhone: '+992 90 765-43-21',
           extraPhones: ['92 111 22 33'],
           telegram: '@nigina',
           notes: 'Записалась по рекламе',
@@ -463,8 +462,9 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
         lastName: 'Каримова',
         // Телефоны приведены к E.164, email — к нижнему регистру (ТЗ 3.1).
         phone: '+992901234567',
-        parentPhone: '+992907654321',
         extraPhones: ['+992921112233'],
+        // Телефона родителя в форме ТЗ 5.3 нет: контакты ведёт /students/{id}/parents.
+        parents: [],
         email: 'nigina@mail.tj',
         birthDate: '2004-05-17',
         gender: Gender.FEMALE,
@@ -537,6 +537,15 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
       await send('post', '/api/v1/students', token, { ...NEW_STUDENT, email: 'не почта' }).expect(
         400,
       );
+    });
+
+    it('телефон родителя в форме не принимается — он ведётся в /parents (ТЗ 4)', async () => {
+      const token = await actor('Permission.Students.Create');
+
+      await send('post', '/api/v1/students', token, {
+        ...NEW_STUDENT,
+        parentPhone: '+992907654321',
+      }).expect(400);
     });
   });
 

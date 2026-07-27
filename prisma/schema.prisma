@@ -32,6 +32,9 @@
 //
 // Фаза 4 — студенты (ТЗ 5.3):
 //   Feedback — заметка сотрудника о студенте (карточка: Feedback / Edit / Block / Delete).
+//   Parent / StudentParent — родители и опекуны (ТЗ 4): запись общая, узнаётся
+//   по телефону, степень родства лежит на связке. Колонка `Student.parentPhone`
+//   при их появлении убрана — она стала бы вторым источником истины о контакте.
 //   Приглашение (Invite) и блокировка (Block) новых таблиц не заводят: первое
 //   создаёт обычный `Account`, вторая переводит `Account.status` и `Student.status`.
 
@@ -125,8 +128,6 @@ model Student {
 
   /// Контактный телефон в E.164. При регистрации совпадает с `Account.phone`.
   phone       String   @unique
-  /// Телефон родителя/опекуна (ТЗ 3.1, поле регистрации).
-  parentPhone String?
   /// Дополнительные телефоны (ТЗ 5.3).
   extraPhones String[] @default([])
 
@@ -154,6 +155,11 @@ model Student {
 
   /// Заметки сотрудников о студенте (ТЗ 5.3: карточка — Feedback).
   feedback Feedback[]
+
+  /// Родители и опекуны (ТЗ 4). Телефон родителя раньше лежал колонкой
+  /// `parentPhone` — с появлением `Parent` она стала бы вторым источником
+  /// истины о том же контакте, поэтому убрана миграцией с переносом данных.
+  parents StudentParent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -914,4 +920,75 @@ model Feedback {
   /// Обратный обход: что писал конкретный сотрудник.
   @@index([authorId])
   @@map("student_feedback")
+}
+
+/// Кем родитель приходится студенту (ТЗ 4: Parent/Guardian).
+///
+/// Необязательно: регистрация (ТЗ 3.1) собирает у студента только номер
+/// родителя и «кем» не спрашивает — запись, заведённая ею, знает о человеке
+/// ровно телефон. Ставить в такой ситуации `OTHER` значило бы утверждать,
+/// что степень родства выяснена и оказалась «прочее».
+enum ParentRelation {
+  MOTHER
+  FATHER
+  GUARDIAN
+  OTHER
+}
+
+/// Родитель или опекун (ТЗ 4: Parent/Guardian).
+///
+/// Запись **общая**, а не принадлежащая студенту: у одного родителя бывает
+/// несколько детей в центре, и вторая копия его контактов разошлась бы
+/// с первой на первой же смене номера, а обзвон родителей группы посчитал бы
+/// его дважды.
+///
+/// Узнаётся по телефону: внутреннего идентификатора у оператора нет, а номер
+/// он и так вводит — тот же естественный ключ, по которому импорт состава
+/// находит студентов (решение сессии 0013).
+model Parent {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Имя и фамилия необязательны — см. `ParentRelation`: при регистрации
+  /// известен только номер, а требовать ФИО значило бы не дать записать
+  /// то, что ТЗ 3.1 собирает.
+  firstName String?
+  lastName  String?
+
+  /// Телефон в E.164 — естественный ключ записи (ТЗ 3.1).
+  phone String @unique
+
+  email    String?
+  telegram String?
+  notes    String?
+
+  /// Дети этого родителя в центре.
+  students StudentParent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("parents")
+}
+
+/// Связь «студент ↔ родитель» (ТЗ 4).
+///
+/// Степень родства живёт здесь, а не в `Parent`: один и тот же человек бывает
+/// матерью одному ребёнку и опекуном другому, и в самой записи родителя это
+/// поле пришлось бы выбирать между двумя верными значениями.
+model StudentParent {
+  studentId String  @db.Uuid
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  parentId String @db.Uuid
+  parent   Parent @relation(fields: [parentId], references: [id], onDelete: Cascade)
+
+  relation ParentRelation?
+
+  createdAt DateTime @default(now())
+
+  /// Один родитель у студента ровно один раз — как ментор в группе (сессия 0010).
+  @@id([studentId, parentId])
+  /// Обратный обход: дети этого родителя.
+  @@index([parentId])
+  @@map("student_parents")
 }

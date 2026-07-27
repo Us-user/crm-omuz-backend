@@ -95,7 +95,6 @@ const STUDENT_SELECT = {
   gender: true,
   address: true,
   email: true,
-  parentPhone: true,
   extraPhones: true,
   telegram: true,
   photoUrl: true,
@@ -103,6 +102,16 @@ const STUDENT_SELECT = {
   status: true,
   createdAt: true,
   branch: { select: { id: true, name: true } },
+  // Родители (ТЗ 4) — контакты прямо в карточке: раньше на этом месте была
+  // колонка `parentPhone`, и убрать её, ничего не отдав взамен, значило бы
+  // потерять телефон родителя из строки списка.
+  parents: {
+    select: {
+      relation: true,
+      parent: { select: { id: true, firstName: true, lastName: true, phone: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  },
   // Хеш пароля в выборку не входит: наружу уходит только то, что показывает карточка.
   account: { select: { id: true, phone: true, email: true, status: true } },
   // Только действующие членства: закрытые — это история, и в строке списка
@@ -155,7 +164,6 @@ export interface StudentWriteInput {
   gender: Gender | null;
   address: string | null;
   email: string | null;
-  parentPhone: string | null;
   extraPhones: string[];
   telegram: string | null;
   photoUrl: string | null;

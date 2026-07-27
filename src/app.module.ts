@@ -22,6 +22,7 @@ import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { StudentAccessModule } from './student-access/student-access.module';
 import { StudentFeedbackModule } from './student-feedback/student-feedback.module';
+import { StudentParentsModule } from './student-parents/student-parents.module';
 import { StudentsModule } from './students/students.module';
 import { SyllabusModule } from './syllabus/syllabus.module';
 
@@ -40,6 +41,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentsModule,
     StudentAccessModule,
     StudentFeedbackModule,
+    StudentParentsModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,

@@ -29,6 +29,7 @@ export interface CreateStudentAccountInput {
   lastName: string;
   birthDate: Date;
   address: string;
+  /** Телефон родителя из формы регистрации (ТЗ 3.1), уже приведённый к E.164. */
   parentPhone?: string;
 }
 
@@ -96,7 +97,14 @@ export class AuthRepository {
 
   /**
    * Создаёт аккаунт и профиль студента одной транзакцией: аккаунт без профиля —
-   * невалидное состояние (ТЗ 3.1).
+   * невалидное состояние (ТЗ 3.1). Вложенные записи Prisma выполняет в одной
+   * транзакции, поэтому родитель заводится здесь же.
+   *
+   * Телефон родителя (ТЗ 3.1) больше не колонка профиля, а запись `Parent`
+   * (ТЗ 4): `connectOrCreate` привязывает уже существующего родителя, если
+   * такой номер в системе есть, — например, когда регистрируется второй ребёнок
+   * той же семьи. Имя и степень родства остаются пустыми: форма регистрации
+   * их не спрашивает, и подставленное значение было бы выдумкой.
    */
   async createStudentAccount(input: CreateStudentAccountInput): Promise<AccountWithProfile> {
     return this.prisma.account.create({
@@ -114,7 +122,20 @@ export class AuthRepository {
             address: input.address,
             email: input.email,
             phone: input.phone,
-            parentPhone: input.parentPhone,
+            ...(input.parentPhone === undefined
+              ? {}
+              : {
+                  parents: {
+                    create: {
+                      parent: {
+                        connectOrCreate: {
+                          where: { phone: input.parentPhone },
+                          create: { phone: input.parentPhone },
+                        },
+                      },
+                    },
+                  },
+                }),
           },
         },
       },

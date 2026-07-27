@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { Gender, StudentStatus } from '@prisma/client';
+import { Gender, ParentRelation, StudentStatus } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
 import type { AppConfigService } from '../config';
@@ -13,6 +13,7 @@ const OTHER_STUDENT_ID = '22222222-2222-2222-2222-222222222222';
 const BRANCH_ID = '33333333-3333-3333-3333-333333333333';
 const GROUP_ID = '44444444-4444-4444-4444-444444444444';
 const COURSE_ID = '55555555-5555-5555-5555-555555555555';
+const PARENT_ID = '66666666-6666-6666-6666-666666666666';
 
 const row = (overrides: Partial<StudentRow> = {}): StudentRow => ({
   id: STUDENT_ID,
@@ -23,7 +24,17 @@ const row = (overrides: Partial<StudentRow> = {}): StudentRow => ({
   gender: Gender.FEMALE,
   address: 'ул. Рудаки, 105',
   email: 'nigina@mail.tj',
-  parentPhone: '+992907654321',
+  parents: [
+    {
+      relation: ParentRelation.MOTHER,
+      parent: {
+        id: PARENT_ID,
+        firstName: 'Гулнора',
+        lastName: 'Каримова',
+        phone: '+992907654321',
+      },
+    },
+  ],
   extraPhones: ['+992921112233'],
   telegram: '@nigina',
   photoUrl: null,
@@ -124,6 +135,26 @@ describe('StudentsService', () => {
       });
     });
 
+    it('отдаёт родителей контактами — на месте прежней колонки parentPhone', async () => {
+      const result = await service.findAll(query());
+
+      expect(result.items[0]?.parents).toEqual([
+        {
+          id: PARENT_ID,
+          firstName: 'Гулнора',
+          lastName: 'Каримова',
+          phone: '+992907654321',
+          relation: ParentRelation.MOTHER,
+        },
+      ]);
+    });
+
+    it('студент без родителей отдаёт пустой список, а не null', async () => {
+      repository.findMany.mockResolvedValue({ rows: [row({ parents: [] })], total: 1 });
+
+      expect((await service.findAll(query())).items[0]?.parents).toEqual([]);
+    });
+
     it('дата рождения отдаётся как YYYY-MM-DD, без времени', async () => {
       const result = await service.findAll(query());
 
@@ -211,19 +242,17 @@ describe('StudentsService', () => {
   });
 
   describe('Создание', () => {
-    it('нормализует телефон, телефон родителя и доп. телефоны в E.164', async () => {
+    it('нормализует телефон и доп. телефоны в E.164', async () => {
       await service.create({
         firstName: 'Нигина',
         lastName: 'Каримова',
         phone: '901234567',
-        parentPhone: '+992 90 765-43-21',
         extraPhones: ['92 111 22 33'],
       });
 
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           phone: '+992901234567',
-          parentPhone: '+992907654321',
           extraPhones: ['+992921112233'],
         }),
       );
@@ -260,7 +289,6 @@ describe('StudentsService', () => {
           gender: null,
           address: null,
           email: null,
-          parentPhone: null,
           extraPhones: [],
           telegram: null,
           photoUrl: null,
