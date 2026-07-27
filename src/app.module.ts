@@ -14,6 +14,7 @@ import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
 import { MailerModule } from './mailer/mailer.module';
+import { PerformanceModule } from './performance/performance.module';
 import { PhoneModule } from './phone/phone.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
@@ -47,6 +48,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentCoinsModule,
     StudentFeedbackModule,
     StudentParentsModule,
+    PerformanceModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,

@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { AccountStatus, Gender, ParentRelation, StudentStatus } from '@prisma/client';
 
+import { ActivityCategory } from '../../performance/performance';
+
 /** Филиал студента в карточке (ТЗ 3.3) — без второго запроса за названием. */
 export class StudentBranchDto {
   @ApiProperty({ format: 'uuid' })
@@ -135,6 +137,34 @@ export class StudentDto {
     description: 'Сколько всего членств у студента, включая закрытые, — это его учебная история.',
   })
   groupsCount!: number;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 87.33,
+    description:
+      'Общий балл (ТЗ 5.8): среднее `Sum` по финализированным неделям. `null` — закрытых ' +
+      'недель ещё нет. Подробности — `GET /students/{id}/performance`.',
+  })
+  averageScore!: number | null;
+
+  @ApiPropertyOptional({
+    enum: ActivityCategory,
+    nullable: true,
+    description: 'Категория активности (ТЗ 5.5), выведенная из общего балла.',
+  })
+  activityCategory!: ActivityCategory | null;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Handsome' })
+  activityCategoryTitle!: string | null;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'Корона (ТЗ 5.3: «топ-студент»): №1 рейтинга центра по общему баллу. ' +
+      'В рейтинг идут только студенты с действующим членством, поэтому у выпускника ' +
+      'короны нет даже при высоком балле. При равенстве баллов корона у всех первых.',
+  })
+  isTopStudent!: boolean;
 
   @ApiProperty({ example: '2026-07-27T10:15:00.000Z' })
   createdAt!: string;

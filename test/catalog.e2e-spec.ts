@@ -681,6 +681,9 @@ describe('Справочники учебного контура (e2e, хран�
         // в аудиториях, и это проверяет `group-schedule.e2e-spec.ts`.
         countScheduleSlotsWithRoom: () => Promise.resolve(0),
         countStudents: (id: string) => store.countGroupStudents(id),
+        // Журнала в этом наборе нет, поэтому счётчики категорий выходят
+        // нулевыми: их проверяет `performance.e2e-spec.ts`, где есть недели.
+        findActivity: () => Promise.resolve({ members: [], results: [] }),
         create: (input: GroupWriteInput) => store.createGroup(input),
         update: (id: string, input: Partial<GroupWriteInput>) => store.updateGroup(id, input),
         delete: (id: string) => store.deleteGroup(id),

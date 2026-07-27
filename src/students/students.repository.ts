@@ -3,6 +3,9 @@ import type { Gender, Prisma, StudentStatus } from '@prisma/client';
 import { AccountType, GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
+// Прямым путём, а не через barrel `../performance`: оттуда пришли бы ещё сервис
+// и репозиторий успеваемости, которые студентам не нужны (правило сессии 0007).
+import { FINALIZED_WEEK_FILTER, RANKED_STUDENT_FILTER } from '../performance/performance';
 import { PrismaService } from '../prisma/prisma.service';
 import { StudentSortField } from './dto';
 
@@ -175,6 +178,14 @@ export interface StudentWriteInput {
 /** `undefined` — колонку не менять; значение (включая `null`) — записать. */
 export type StudentUpdateInput = Partial<StudentWriteInput>;
 
+/** Общий балл одного студента (ТЗ 5.8) — из него выводятся категория и корона. */
+export interface StudentScoreRow {
+  studentId: string;
+  /** Неокруглённое среднее: по нему сравнивается корона (см. `roundScore`). */
+  average: number;
+  weeksCount: number;
+}
+
 /**
  * Доступ к данным студентов (`Controller → Service → Repository`).
  * Бизнес-правил здесь нет — только запросы Prisma.
@@ -238,6 +249,49 @@ export class StudentsRepository {
 
   findById(id: string): Promise<StudentRow | null> {
     return this.prisma.student.findUnique({ where: { id }, select: STUDENT_SELECT });
+  }
+
+  /**
+   * Общий балл студентов страницы (ТЗ 5.8) — на нём держатся категория
+   * активности (ТЗ 5.5) и корона (ТЗ 5.3) в строке списка.
+   *
+   * Считается по **финализированным** неделям: набор задаётся общей константой,
+   * а не переписанным здесь условием, — три места с разными наборами недель
+   * разошлись бы молча. Студенты без единой закрытой недели в ответ не попадают:
+   * балла у них нет, и ноль записал бы их в Black list ни за что.
+   */
+  async aggregateScores(studentIds: string[]): Promise<StudentScoreRow[]> {
+    if (studentIds.length === 0) return [];
+
+    const groups = await this.prisma.weekResult.groupBy({
+      by: ['studentId'],
+      where: { studentId: { in: studentIds }, week: FINALIZED_WEEK_FILTER },
+      _avg: { sum: true },
+      _count: { _all: true },
+    });
+
+    return groups.flatMap(({ studentId, _avg, _count }) =>
+      _avg.sum === null ? [] : [{ studentId, average: _avg.sum, weeksCount: _count._all }],
+    );
+  }
+
+  /**
+   * Наибольший общий балл среди участников рейтинга — им помечается корона
+   * (ТЗ 5.3: «топ-студент»). В рейтинг идут только те, кто учится сейчас
+   * (решение сессии 0019), иначе корона навсегда осталась бы у выпускника.
+   *
+   * `null` — в центре нет ни одной финализированной недели, и короны нет ни у кого.
+   */
+  async findTopAverage(): Promise<number | null> {
+    const [top] = await this.prisma.weekResult.groupBy({
+      by: ['studentId'],
+      where: { week: FINALIZED_WEEK_FILTER, student: RANKED_STUDENT_FILTER },
+      _avg: { sum: true },
+      orderBy: { _avg: { sum: 'desc' } },
+      take: 1,
+    });
+
+    return top?._avg.sum ?? null;
   }
 
   /**

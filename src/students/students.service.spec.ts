@@ -3,6 +3,7 @@ import { Gender, ParentRelation, StudentStatus } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
 import type { AppConfigService } from '../config';
+import { ActivityCategory } from '../performance/performance';
 import { PhoneService } from '../phone/phone.service';
 import { StudentQueryDto, StudentSortField } from './dto';
 import type { StudentDeletionCheck, StudentRow, StudentsRepository } from './students.repository';
@@ -87,6 +88,8 @@ describe('StudentsService', () => {
       | 'findByPhone'
       | 'findBranch'
       | 'findForDeletion'
+      | 'aggregateScores'
+      | 'findTopAverage'
       | 'create'
       | 'update'
       | 'delete'
@@ -101,6 +104,10 @@ describe('StudentsService', () => {
       findByPhone: jest.fn().mockResolvedValue(null),
       findBranch: jest.fn().mockResolvedValue({ id: BRANCH_ID }),
       findForDeletion: jest.fn().mockResolvedValue(deletable()),
+      // По умолчанию закрытых недель нет: у большинства случаев карточки
+      // успеваемость ни при чём, и балла у студента просто не существует.
+      aggregateScores: jest.fn().mockResolvedValue([]),
+      findTopAverage: jest.fn().mockResolvedValue(null),
       // Запись отражает то, что делает Prisma: `undefined` означает «колонку
       // не менять», а не «записать пустоту», — иначе тест правки одного поля
       // получал бы карточку, где стёрто всё остальное.
@@ -540,6 +547,118 @@ describe('StudentsService', () => {
       repository.findForDeletion.mockResolvedValue(null);
 
       await expect(service.remove(STUDENT_ID)).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('Общий балл, категория и корона (ТЗ 5.3, 5.5, 5.8)', () => {
+    it('отдаёт балл и выведенную из него категорию', async () => {
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 87.5, weeksCount: 4 },
+      ]);
+
+      await expect(service.findOne(STUDENT_ID)).resolves.toMatchObject({
+        averageScore: 87.5,
+        activityCategory: ActivityCategory.Handsome,
+        activityCategoryTitle: 'Handsome',
+      });
+    });
+
+    it('без закрытых недель балла и категории нет', async () => {
+      // Ноль записал бы студента в Black list за то, что его группа
+      // просто не дошла до первой финализации.
+      await expect(service.findOne(STUDENT_ID)).resolves.toMatchObject({
+        averageScore: null,
+        activityCategory: null,
+        activityCategoryTitle: null,
+        isTopStudent: false,
+      });
+    });
+
+    it('корона у того, чей балл равен вершине рейтинга', async () => {
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 96, weeksCount: 3 },
+      ]);
+      repository.findTopAverage.mockResolvedValue(96);
+
+      await expect(service.findOne(STUDENT_ID)).resolves.toMatchObject({ isTopStudent: true });
+    });
+
+    it('короны нет у того, кто ниже вершины', async () => {
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 90, weeksCount: 3 },
+      ]);
+      repository.findTopAverage.mockResolvedValue(96);
+
+      await expect(service.findOne(STUDENT_ID)).resolves.toMatchObject({ isTopStudent: false });
+    });
+
+    it('короны нет у того, кто уже не учится, даже при совпадении балла', async () => {
+      // Решение сессии 0019: в рейтинг идут только действующие членства,
+      // и совпадение балла выпускника с вершиной ничего не значит.
+      repository.findById.mockResolvedValue(row({ groups: [] }));
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 96, weeksCount: 3 },
+      ]);
+      repository.findTopAverage.mockResolvedValue(96);
+
+      const student = await service.findOne(STUDENT_ID);
+
+      expect(student.isTopStudent).toBe(false);
+      // Балл при этом остаётся видимым — из рейтинга выпадает только место.
+      expect(student.averageScore).toBe(96);
+    });
+
+    it('корона сравнивается по неокруглённому баллу', async () => {
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 87.334, weeksCount: 3 },
+      ]);
+      repository.findTopAverage.mockResolvedValue(87.335);
+
+      const student = await service.findOne(STUDENT_ID);
+
+      // Оба показали бы 87.33, но первый только один.
+      expect(student.averageScore).toBe(87.33);
+      expect(student.isTopStudent).toBe(false);
+    });
+
+    it('в списке балл запрашивается одним агрегатом на страницу', async () => {
+      repository.findMany.mockResolvedValue({
+        rows: [row(), row({ id: OTHER_STUDENT_ID })],
+        total: 2,
+      });
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: OTHER_STUDENT_ID, average: 50, weeksCount: 1 },
+      ]);
+
+      const page = await service.findAll(query());
+
+      expect(repository.aggregateScores).toHaveBeenCalledTimes(1);
+      expect(repository.aggregateScores).toHaveBeenCalledWith([STUDENT_ID, OTHER_STUDENT_ID]);
+      // Студент, которого нет в агрегате, получает пустой балл, а не чужой.
+      expect(page.items[0]).toMatchObject({ averageScore: null, activityCategory: null });
+      expect(page.items[1]).toMatchObject({
+        averageScore: 50,
+        activityCategory: ActivityCategory.Kettle,
+      });
+    });
+
+    it('созданному студенту балл не запрашивается', async () => {
+      // У профиля, заведённого секунду назад, закрытых недель быть не может.
+      await service.create({ firstName: 'Нигина', lastName: 'Каримова', phone: '901234567' });
+
+      expect(repository.aggregateScores).not.toHaveBeenCalled();
+      expect(repository.findTopAverage).not.toHaveBeenCalled();
+    });
+
+    it('после правки карточки балл пересчитывается, а не теряется', async () => {
+      repository.aggregateScores.mockResolvedValue([
+        { studentId: STUDENT_ID, average: 70, weeksCount: 2 },
+      ]);
+
+      await expect(service.update(STUDENT_ID, { telegram: '@new' })).resolves.toMatchObject({
+        averageScore: 70,
+        activityCategory: ActivityCategory.Advanced,
+      });
     });
   });
 });

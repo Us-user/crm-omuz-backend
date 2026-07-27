@@ -3,6 +3,9 @@ import type { DurationUnit, GroupFormat, GroupStatus, Prisma } from '@prisma/cli
 import { GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
+// Прямым путём, а не через barrel `../performance`: оттуда пришли бы ещё сервис
+// и репозиторий успеваемости, которые группам не нужны (правило сессии 0007).
+import { FINALIZED_WEEK_FILTER } from '../performance/performance';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupSortField } from './dto';
 
@@ -62,6 +65,28 @@ export interface GroupWriteInput {
 /** `undefined` — колонку не менять; значение (включая `null`) — записать. */
 export type GroupUpdateInput = Partial<GroupWriteInput>;
 
+/** Кто сейчас в составе группы — счётчики считаются по действующим членствам. */
+export interface GroupMemberRow {
+  groupId: string;
+  studentId: string;
+}
+
+/** Итог студента за одну закрытую неделю **этой** группы. */
+export interface GroupWeekResultRow {
+  groupId: string;
+  studentId: string;
+  sum: number;
+}
+
+/**
+ * Сырьё для счётчиков категорий (ТЗ 5.5): состав и итоги закрытых недель.
+ * Средние, категории и счётчики считает сервис — здесь только выборка.
+ */
+export interface GroupActivityRows {
+  members: GroupMemberRow[];
+  results: GroupWeekResultRow[];
+}
+
 /**
  * Доступ к данным групп (`Controller → Service → Repository`).
  * Бизнес-правил здесь нет — только запросы Prisma.
@@ -115,6 +140,44 @@ export class GroupsRepository {
 
   findById(id: string): Promise<GroupRow | null> {
     return this.prisma.group.findUnique({ where: { id }, select: GROUP_SELECT });
+  }
+
+  /**
+   * Состав и итоги закрытых недель для счётчиков категорий активности (ТЗ 5.5).
+   *
+   * Балл считается **в разрезе группы**, а не глобальный (решение сессии 0019):
+   * счётчики стоят на карточке группы, и сдвигаться от учёбы человека
+   * на соседнем курсе они не должны.
+   *
+   * Две выборки вместо агрегата: `WeekResult` не хранит группу (она у недели),
+   * а `groupBy` Prisma умеет группировать только по своим колонкам — по одному
+   * запросу на группу вышло бы столько же запросов, сколько строк на странице.
+   * Итоги сводятся в средние уже в сервисе. Объём ограничен страницей списка
+   * (`limit` ≤ 100) и длиной журнала её групп; на масштабе учебного центра
+   * это тысячи коротких строк.
+   */
+  async findActivity(groupIds: string[]): Promise<GroupActivityRows> {
+    if (groupIds.length === 0) return { members: [], results: [] };
+
+    const [members, results] = await this.prisma.$transaction([
+      this.prisma.groupStudent.findMany({
+        where: { groupId: { in: groupIds }, status: GroupStudentStatus.ACTIVE },
+        select: { groupId: true, studentId: true },
+      }),
+      this.prisma.weekResult.findMany({
+        where: { week: { groupId: { in: groupIds }, ...FINALIZED_WEEK_FILTER } },
+        select: { studentId: true, sum: true, week: { select: { groupId: true } } },
+      }),
+    ]);
+
+    return {
+      members,
+      results: results.map(({ studentId, sum, week }) => ({
+        groupId: week.groupId,
+        studentId,
+        sum,
+      })),
+    };
   }
 
   /**

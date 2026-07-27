@@ -351,6 +351,10 @@ describe('Студенты: CRUD (e2e, хранилище в памяти)', () 
         findByPhone: (phone: string) => store.findByPhone(phone),
         findBranch: (id: string) => store.findBranch(id),
         findForDeletion: (id: string) => store.findForDeletion(id),
+        // Журнала в этом наборе нет: балла и короны у студентов не возникает.
+        // Их проверяет `performance.e2e-spec.ts`, где есть недели и их итоги.
+        aggregateScores: () => Promise.resolve([]),
+        findTopAverage: () => Promise.resolve(null),
         create: (input: StudentWriteInput) => store.create(input),
         update: (id: string, input: StudentUpdateInput) => store.update(id, input),
         delete: (id: string, accountId: string | null) => store.delete(id, accountId),

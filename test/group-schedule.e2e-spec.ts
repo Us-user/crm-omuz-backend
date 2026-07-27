@@ -458,6 +458,9 @@ describe('Расписание группы (e2e, хранилище в памя
         findByName: () => Promise.resolve(null),
         findBranch: (id: string) => Promise.resolve({ id, name: id }),
         countScheduleSlotsWithRoom: (id: string) => store.countGroupSlotsWithRoom(id),
+        // Журнала в этом наборе нет: счётчики категорий активности (ТЗ 5.5)
+        // проверяет `performance.e2e-spec.ts`, где живут недели и их итоги.
+        findActivity: () => Promise.resolve({ members: [], results: [] }),
         update: (id: string) => store.findGroupAsRow(id),
       })
       .compile();

@@ -9,6 +9,13 @@ import {
   Paginated,
   parseIsoDate,
 } from '../common';
+// Прямым путём, а не через barrel: нужны только чистые функции правила,
+// а не сервис и репозиторий успеваемости (правило сессии 0007).
+import {
+  ACTIVITY_CATEGORY_TITLES,
+  activityCategoryOf,
+  roundScore,
+} from '../performance/performance';
 import { PhoneService } from '../phone';
 import type {
   CreateStudentDto,
@@ -19,6 +26,19 @@ import type {
 } from './dto';
 import type { StudentDeletionCheck, StudentRow } from './students.repository';
 import { StudentsRepository } from './students.repository';
+
+/**
+ * Успеваемость студента в строке списка: общий балл, категория активности
+ * и корона. Считается отдельным агрегатом по `WeekResult`, а не хранится
+ * в профиле (решение сессии 0019).
+ */
+interface StudentScore {
+  averageScore: number | null;
+  isTopStudent: boolean;
+}
+
+/** У студента без единой закрытой недели балла нет — и категории тоже. */
+const NO_SCORE: StudentScore = { averageScore: null, isTopStudent: false };
 
 /**
  * Студенты (ТЗ 5.3) — админ-сторона: список с фильтрами, карточка, форма.
@@ -59,11 +79,20 @@ export class StudentsService {
       take: query.take,
     });
 
-    return Paginated.from(rows.map(toDto), total, query);
+    const scores = await this.scoresOf(rows);
+
+    return Paginated.from(
+      rows.map((row) => toDto(row, scores.get(row.id) ?? NO_SCORE)),
+      total,
+      query,
+    );
   }
 
   async findOne(id: string): Promise<StudentDto> {
-    return toDto(await this.require(id));
+    const student = await this.require(id);
+    const scores = await this.scoresOf([student]);
+
+    return toDto(student, scores.get(student.id) ?? NO_SCORE);
   }
 
   async create(dto: CreateStudentDto): Promise<StudentDto> {
@@ -91,7 +120,9 @@ export class StudentsService {
 
     this.logger.log(`Создан студент ${student.lastName} ${student.firstName} (${student.id})`);
 
-    return toDto(student);
+    // Балл не запрашивается: у профиля, созданного секунду назад, не может быть
+    // ни одной закрытой недели — запрос вернул бы пустоту за деньги.
+    return toDto(student, NO_SCORE);
   }
 
   async update(id: string, dto: UpdateStudentDto): Promise<StudentDto> {
@@ -124,7 +155,9 @@ export class StudentsService {
 
     this.logger.log(`Изменён студент ${student.lastName} ${student.firstName} (${student.id})`);
 
-    return toDto(student);
+    const scores = await this.scoresOf([student]);
+
+    return toDto(student, scores.get(student.id) ?? NO_SCORE);
   }
 
   async remove(id: string): Promise<StudentDeletedDto> {
@@ -144,6 +177,39 @@ export class StudentsService {
     );
 
     return { id, fullName, accountDeleted: student.accountId !== null };
+  }
+
+  /**
+   * Общий балл и корона для строк ответа (ТЗ 5.3, 5.8).
+   *
+   * Два запроса на страницу, а не на строку: агрегат по всем студентам сразу
+   * и один наибольший балл центра. Корона сравнивается по **неокруглённым**
+   * значениям — иначе двое с 87.334 и 87.335 показали бы одинаковые 87.33
+   * и оба оказались бы первыми.
+   *
+   * Короны нет у того, кто сейчас не учится: он не участвует в рейтинге
+   * (решение сессии 0019), и совпадение его балла с вершиной ничего не значит.
+   * Действующие членства уже лежат в строке — второго запроса не нужно.
+   */
+  private async scoresOf(rows: StudentRow[]): Promise<Map<string, StudentScore>> {
+    if (rows.length === 0) return new Map();
+
+    const [scores, topAverage] = await Promise.all([
+      this.repository.aggregateScores(rows.map(({ id }) => id)),
+      this.repository.findTopAverage(),
+    ]);
+
+    const studying = new Set(rows.filter((row) => row.groups.length > 0).map(({ id }) => id));
+
+    return new Map(
+      scores.map(({ studentId, average }) => [
+        studentId,
+        {
+          averageScore: roundScore(average),
+          isTopStudent: topAverage !== null && average === topAverage && studying.has(studentId),
+        },
+      ]),
+    );
   }
 
   private async require(id: string): Promise<StudentRow> {
@@ -263,7 +329,7 @@ const parseOptionalDatePatch = (
   field: string,
 ): Date | null | undefined => (value === undefined ? undefined : parseOptionalDate(value, field));
 
-const toDto = (row: StudentRow): StudentDto => ({
+const toDto = (row: StudentRow, score: StudentScore): StudentDto => ({
   id: row.id,
   firstName: row.firstName,
   lastName: row.lastName,
@@ -293,5 +359,15 @@ const toDto = (row: StudentRow): StudentDto => ({
     courseTitle: group.course.title,
   })),
   groupsCount: row._count.groups,
+  averageScore: score.averageScore,
+  activityCategory: activityCategoryOf(score.averageScore),
+  activityCategoryTitle: titleOf(score.averageScore),
+  isTopStudent: score.isTopStudent,
   createdAt: row.createdAt.toISOString(),
 });
+
+const titleOf = (score: number | null): string | null => {
+  const category = activityCategoryOf(score);
+
+  return category === null ? null : ACTIVITY_CATEGORY_TITLES[category];
+};

@@ -3,10 +3,11 @@ import { DurationUnit, GroupFormat, GroupStatus } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
 import { GroupQueryDto, GroupSortField } from './dto';
-import type { GroupRow, GroupsRepository } from './groups.repository';
+import type { GroupActivityRows, GroupRow, GroupsRepository } from './groups.repository';
 import { GroupsService } from './groups.service';
 
 const GROUP_ID = '11111111-1111-1111-1111-111111111111';
+const OTHER_GROUP_ID = '66666666-6666-6666-6666-666666666666';
 const BRANCH_ID = '22222222-2222-2222-2222-222222222222';
 const OTHER_BRANCH_ID = '33333333-3333-3333-3333-333333333333';
 const COURSE_ID = '44444444-4444-4444-4444-444444444444';
@@ -54,6 +55,7 @@ describe('GroupsService', () => {
       | 'findCourse'
       | 'countScheduleSlotsWithRoom'
       | 'countStudents'
+      | 'findActivity'
       | 'create'
       | 'update'
       | 'delete'
@@ -70,6 +72,7 @@ describe('GroupsService', () => {
       findCourse: jest.fn().mockResolvedValue({ id: COURSE_ID, title: 'Frontend Basic' }),
       countScheduleSlotsWithRoom: jest.fn().mockResolvedValue(0),
       countStudents: jest.fn().mockResolvedValue(0),
+      findActivity: jest.fn().mockResolvedValue({ members: [], results: [] }),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -452,6 +455,152 @@ describe('GroupsService', () => {
       const result = await service.findOne(GROUP_ID);
 
       expect(result.enrolledCount).toBe(0);
+    });
+  });
+
+  describe('Категории активности и Passing students (ТЗ 5.5)', () => {
+    /** Действующий состав и итоги закрытых недель — как их отдаёт репозиторий. */
+    const activity = (
+      members: string[],
+      results: { studentId: string; sum: number; groupId?: string }[] = [],
+    ): GroupActivityRows => ({
+      members: members.map((studentId) => ({ groupId: GROUP_ID, studentId })),
+      results: results.map(({ studentId, sum, groupId }) => ({
+        groupId: groupId ?? GROUP_ID,
+        studentId,
+        sum,
+      })),
+    });
+
+    it('раскладывает действующий состав по категориям', async () => {
+      repository.findActivity.mockResolvedValue(
+        activity(
+          ['s1', 's2', 's3'],
+          [
+            { studentId: 's1', sum: 100 },
+            { studentId: 's1', sum: 96 },
+            { studentId: 's2', sum: 82 },
+            { studentId: 's3', sum: 30 },
+          ],
+        ),
+      );
+
+      const group = await service.findOne(GROUP_ID);
+
+      expect(group.activity).toStrictEqual({
+        chatGpt: 1,
+        handsome: 1,
+        advanced: 0,
+        kettle: 0,
+        blackList: 1,
+        unscored: 0,
+      });
+    });
+
+    it('студент без закрытых недель идёт в unscored, а не в Black list', async () => {
+      // «Не оценён» и «не справляется» — разные вещи; вторая испортила бы
+      // отчёт по группе, которая просто ещё не финализировала ни одной недели.
+      repository.findActivity.mockResolvedValue(
+        activity(['s1', 's2'], [{ studentId: 's1', sum: 90 }]),
+      );
+
+      const group = await service.findOne(GROUP_ID);
+
+      expect(group.activity.unscored).toBe(1);
+      expect(group.activity.blackList).toBe(0);
+      expect(group.activity.chatGpt).toBe(0);
+      expect(group.activity.handsome).toBe(1);
+    });
+
+    it('«Passing students» считает тех, кто не в Black list', async () => {
+      repository.findActivity.mockResolvedValue(
+        activity(
+          ['s1', 's2', 's3', 's4'],
+          [
+            { studentId: 's1', sum: 45 },
+            { studentId: 's2', sum: 44 },
+            { studentId: 's3', sum: 100 },
+          ],
+        ),
+      );
+
+      const group = await service.findOne(GROUP_ID);
+
+      // s1 (45) и s3 (100) успевают; s2 (44) в Black list, s4 не оценён.
+      expect(group.passingCount).toBe(2);
+    });
+
+    it('балл считается по неделям этой группы, а не по всем', async () => {
+      // Счётчики стоят на карточке группы: учёба человека на соседнем курсе
+      // сдвигать их не должна.
+      repository.findActivity.mockResolvedValue(
+        activity(
+          ['s1'],
+          [
+            { studentId: 's1', sum: 100 },
+            { studentId: 's1', sum: 10, groupId: OTHER_GROUP_ID },
+          ],
+        ),
+      );
+
+      const group = await service.findOne(GROUP_ID);
+
+      expect(group.activity.chatGpt).toBe(1);
+      expect(group.passingCount).toBe(1);
+    });
+
+    it('покинувшие в счётчики не идут: считается действующий состав', async () => {
+      // Ушедший из группы её больше не характеризует, хотя итоги его недель остались.
+      repository.findActivity.mockResolvedValue(activity([], [{ studentId: 's1', sum: 100 }]));
+
+      const group = await service.findOne(GROUP_ID);
+
+      expect(group.activity.chatGpt).toBe(0);
+      expect(group.passingCount).toBe(0);
+    });
+
+    it('пустая группа отдаёт нули, а не пропускает счётчики', async () => {
+      const group = await service.findOne(GROUP_ID);
+
+      expect(group.activity).toStrictEqual({
+        chatGpt: 0,
+        handsome: 0,
+        advanced: 0,
+        kettle: 0,
+        blackList: 0,
+        unscored: 0,
+      });
+      expect(group.passingCount).toBe(0);
+    });
+
+    it('в списке счётчики запрашиваются одной выборкой на страницу', async () => {
+      repository.findMany.mockResolvedValue({
+        rows: [row(), row({ id: OTHER_GROUP_ID, name: 'Python-1' })],
+        total: 2,
+      });
+      repository.findActivity.mockResolvedValue({
+        members: [
+          { groupId: GROUP_ID, studentId: 's1' },
+          { groupId: OTHER_GROUP_ID, studentId: 's2' },
+        ],
+        results: [
+          { groupId: GROUP_ID, studentId: 's1', sum: 100 },
+          { groupId: OTHER_GROUP_ID, studentId: 's2', sum: 50 },
+        ],
+      });
+
+      const page = await service.findAll(query());
+
+      expect(repository.findActivity).toHaveBeenCalledTimes(1);
+      expect(repository.findActivity).toHaveBeenCalledWith([GROUP_ID, OTHER_GROUP_ID]);
+      expect(page.items[0]?.activity.chatGpt).toBe(1);
+      expect(page.items[1]?.activity.kettle).toBe(1);
+    });
+
+    it('созданной группе счётчики не запрашиваются', async () => {
+      await service.create(validBody);
+
+      expect(repository.findActivity).not.toHaveBeenCalled();
     });
   });
 });

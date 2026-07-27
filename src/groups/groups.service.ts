@@ -14,15 +14,34 @@ import {
   Paginated,
   parseIsoDate,
 } from '../common';
+// Прямым путём, а не через barrel: нужны только чистые функции правила
+// (правило сессии 0007).
+import type { ActivityCategoryCounts } from '../performance/performance';
+import {
+  ActivityCategory,
+  averageScore,
+  countByCategory,
+  isPassing,
+} from '../performance/performance';
 import type {
   CreateGroupDto,
+  GroupActivityDto,
   GroupDeletedDto,
   GroupDto,
   GroupQueryDto,
   UpdateGroupDto,
 } from './dto';
-import type { GroupRow } from './groups.repository';
+import type { GroupActivityRows, GroupRow } from './groups.repository';
 import { GroupsRepository } from './groups.repository';
+
+/** Успеваемость действующего состава группы: счётчики ТЗ 5.5 и «Passing students». */
+interface GroupActivity {
+  counts: ActivityCategoryCounts;
+  passingCount: number;
+}
+
+/** У группы без состава счётчики нулевые, а не отсутствующие. */
+const emptyActivity = (): GroupActivity => ({ counts: countByCategory([]), passingCount: 0 });
 
 /**
  * Учебные группы (ТЗ 5.5) — узел учебного контура: на группу будут ссылаться
@@ -54,11 +73,20 @@ export class GroupsService {
       take: query.take,
     });
 
-    return Paginated.from(rows.map(toDto), total, query);
+    const activity = await this.activityOf(rows.map(({ id }) => id));
+
+    return Paginated.from(
+      rows.map((row) => toDto(row, activity.get(row.id) ?? emptyActivity())),
+      total,
+      query,
+    );
   }
 
   async findOne(id: string): Promise<GroupDto> {
-    return toDto(await this.require(id));
+    const group = await this.require(id);
+    const activity = await this.activityOf([group.id]);
+
+    return toDto(group, activity.get(group.id) ?? emptyActivity());
   }
 
   async create(dto: CreateGroupDto): Promise<GroupDto> {
@@ -92,7 +120,8 @@ export class GroupsService {
       `Создана группа ${group.name} (курс ${group.course.title}, филиал ${group.branch.name}, ${group.id})`,
     );
 
-    return toDto(group);
+    // Состава у только что созданной группы нет по определению — считать нечего.
+    return toDto(group, emptyActivity());
   }
 
   async update(id: string, dto: UpdateGroupDto): Promise<GroupDto> {
@@ -147,7 +176,9 @@ export class GroupsService {
 
     this.logger.log(`Изменена группа ${group.name} (${group.id})`);
 
-    return toDto(group);
+    const activity = await this.activityOf([group.id]);
+
+    return toDto(group, activity.get(group.id) ?? emptyActivity());
   }
 
   /**
@@ -168,6 +199,38 @@ export class GroupsService {
     this.logger.log(`Удалена группа ${group.name} (${id})`);
 
     return { id: group.id, name: group.name };
+  }
+
+  /**
+   * Счётчики категорий активности и «Passing students» (ТЗ 5.5) для групп ответа.
+   *
+   * Считаются по действующему составу: категория описывает того, кто учится
+   * в группе сейчас, а покинувший её больше не характеризует. Балл берётся
+   * **в разрезе группы** — по её закрытым неделям (решение сессии 0019).
+   *
+   * Студент действующего состава, у которого в этой группе нет ни одной
+   * закрытой недели, попадает в `unscored`, а не в Black list: «не оценён»
+   * и «не справляется» — разные вещи, и вторая испортила бы отчёт по группе,
+   * которая просто ещё не дошла до первой финализации.
+   */
+  private async activityOf(groupIds: string[]): Promise<Map<string, GroupActivity>> {
+    if (groupIds.length === 0) return new Map();
+
+    const rows = await this.repository.findActivity(groupIds);
+    const sums = sumsByGroupStudent(rows);
+
+    return new Map(
+      groupIds.map((groupId) => {
+        const scores = rows.members
+          .filter((member) => member.groupId === groupId)
+          .map((member) => averageScore(sums.get(keyOf(groupId, member.studentId)) ?? []));
+
+        return [
+          groupId,
+          { counts: countByCategory(scores), passingCount: scores.filter(isPassing).length },
+        ];
+      }),
+    );
   }
 
   private async require(id: string): Promise<GroupRow> {
@@ -269,7 +332,37 @@ function assertDurationPaired(durationValue: number | null, durationUnit?: strin
   });
 }
 
-const toDto = (row: GroupRow): GroupDto => ({
+const keyOf = (groupId: string, studentId: string): string => `${groupId}:${studentId}`;
+
+/** Итоги закрытых недель, сведённые к паре «группа + студент». */
+function sumsByGroupStudent(rows: GroupActivityRows): Map<string, number[]> {
+  const sums = new Map<string, number[]>();
+
+  for (const result of rows.results) {
+    const key = keyOf(result.groupId, result.studentId);
+    const existing = sums.get(key) ?? [];
+    existing.push(result.sum);
+    sums.set(key, existing);
+  }
+
+  return sums;
+}
+
+/**
+ * Счётчики наружу именами полей, а не значениями enum: `CHAT_GPT` в ключе JSON
+ * читался бы хуже, а перечисление здесь одно и покрыто тестом — разъехаться
+ * с категориями оно не может.
+ */
+const toActivityDto = (counts: ActivityCategoryCounts): GroupActivityDto => ({
+  chatGpt: counts[ActivityCategory.ChatGpt],
+  handsome: counts[ActivityCategory.Handsome],
+  advanced: counts[ActivityCategory.Advanced],
+  kettle: counts[ActivityCategory.Kettle],
+  blackList: counts[ActivityCategory.BlackList],
+  unscored: counts.unscored,
+});
+
+const toDto = (row: GroupRow, activity: GroupActivity): GroupDto => ({
   id: row.id,
   name: row.name,
   description: row.description,
@@ -283,6 +376,8 @@ const toDto = (row: GroupRow): GroupDto => ({
   durationUnit: row.durationUnit,
   capacity: row.capacity,
   enrolledCount: row._count.students,
+  passingCount: activity.passingCount,
+  activity: toActivityDto(activity.counts),
   status: row.status,
   telegramUrl: row.telegramUrl,
   createdAt: row.createdAt.toISOString(),
