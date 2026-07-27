@@ -62,6 +62,12 @@ const byPhone = (overrides: Partial<StudentByPhone> = {}): StudentByPhone => ({
   ...overrides,
 });
 
+/** Членство в том виде, в каком его читает правило статуса профиля (ТЗ 5.3). */
+const membership = (
+  status: GroupStudentStatus = GroupStudentStatus.ACTIVE,
+  statusChangedAt: Date | null = null,
+): { status: GroupStudentStatus; statusChangedAt: Date | null } => ({ status, statusChangedAt });
+
 const competing = (): CompetingMembership => ({
   studentId: STUDENT_ID,
   groupId: OTHER_GROUP_ID,
@@ -91,12 +97,23 @@ describe('GroupStudentsService', () => {
       | 'changeStatus'
       | 'transfer'
       | 'delete'
+      | 'findStudentsWithMemberships'
+      | 'setStudentStatuses'
     >
   >;
   let service: GroupStudentsService;
 
   beforeEach(() => {
     repository = {
+      // Пересчёт статуса профиля (ТЗ 5.3) идёт после каждой операции над
+      // составом. По умолчанию студент уже `ACTIVE` и учится — тогда вывод
+      // ничего не меняет и в БД не пишет; отдельные случаи задают своё.
+      findStudentsWithMemberships: jest
+        .fn()
+        .mockResolvedValue([
+          { id: STUDENT_ID, status: StudentStatus.ACTIVE, groups: [membership()] },
+        ]),
+      setStudentStatuses: jest.fn().mockResolvedValue(undefined),
       findMany: jest.fn().mockResolvedValue({ rows: [row()], total: 1 }),
       findAllForExport: jest.fn().mockResolvedValue([row()]),
       findGroup: jest.fn().mockResolvedValue(group()),
@@ -477,6 +494,148 @@ describe('GroupStudentsService', () => {
       await expect(service.remove(GROUP_ID, STUDENT_ID)).rejects.toMatchObject({
         response: { message: 'Студент не состоит в этой группе' },
       });
+    });
+  });
+
+  describe('Пересчёт статуса профиля (ТЗ 5.3, решение сессии 0014)', () => {
+    /** Ответ на «какие членства у этих студентов сейчас». */
+    const withMemberships = (
+      ...groups: { status: GroupStudentStatus; statusChangedAt: Date | null }[]
+    ): void => {
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        { id: STUDENT_ID, status: StudentStatus.NO_ACTIVE, groups },
+      ]);
+    };
+
+    it('зачисление возвращает профиль в ACTIVE', async () => {
+      withMemberships(membership(GroupStudentStatus.ACTIVE));
+
+      await service.add(GROUP_ID, { studentIds: [STUDENT_ID] });
+
+      expect(repository.findStudentsWithMemberships).toHaveBeenCalledWith([STUDENT_ID]);
+      expect(repository.setStudentStatuses).toHaveBeenCalledWith([
+        { studentId: STUDENT_ID, status: StudentStatus.ACTIVE },
+      ]);
+    });
+
+    it('уход из последней группы переводит профиль в NO_ACTIVE (ТЗ 5.12)', async () => {
+      repository.findMemberships.mockResolvedValue([row()]);
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        {
+          id: STUDENT_ID,
+          status: StudentStatus.ACTIVE,
+          groups: [membership(GroupStudentStatus.LEFT, new Date('2026-06-01T00:00:00.000Z'))],
+        },
+      ]);
+
+      await service.changeStatus(GROUP_ID, {
+        studentIds: [STUDENT_ID],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Переехал в другой город',
+      });
+
+      expect(repository.setStudentStatuses).toHaveBeenCalledWith([
+        { studentId: STUDENT_ID, status: StudentStatus.NO_ACTIVE },
+      ]);
+    });
+
+    it('уход из одной группы не трогает профиль, пока студент учится в другой', async () => {
+      repository.findMemberships.mockResolvedValue([row()]);
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        {
+          id: STUDENT_ID,
+          status: StudentStatus.ACTIVE,
+          groups: [
+            membership(GroupStudentStatus.LEFT, new Date('2026-06-01T00:00:00.000Z')),
+            membership(GroupStudentStatus.ACTIVE),
+          ],
+        },
+      ]);
+
+      await service.changeStatus(GROUP_ID, {
+        studentIds: [STUDENT_ID],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Переехал в другой город',
+      });
+
+      expect(repository.setStudentStatuses).not.toHaveBeenCalled();
+    });
+
+    it('завершение курса переводит профиль в FINISHED', async () => {
+      repository.findMemberships.mockResolvedValue([row()]);
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        {
+          id: STUDENT_ID,
+          status: StudentStatus.ACTIVE,
+          groups: [membership(GroupStudentStatus.FINISHED, new Date('2026-06-01T00:00:00.000Z'))],
+        },
+      ]);
+
+      await service.changeStatus(GROUP_ID, {
+        studentIds: [STUDENT_ID],
+        status: GroupStudentStatus.FINISHED,
+        reason: 'Курс пройден',
+      });
+
+      expect(repository.setStudentStatuses).toHaveBeenCalledWith([
+        { studentId: STUDENT_ID, status: StudentStatus.FINISHED },
+      ]);
+    });
+
+    it('BLOCK автоматика не перебивает', async () => {
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        {
+          id: STUDENT_ID,
+          status: StudentStatus.BLOCK,
+          groups: [membership(GroupStudentStatus.ACTIVE)],
+        },
+      ]);
+
+      await service.add(GROUP_ID, { studentIds: [STUDENT_ID] });
+
+      expect(repository.setStudentStatuses).not.toHaveBeenCalled();
+    });
+
+    it('совпадающий статус в БД не пишется', async () => {
+      // Умолчание набора: студент уже `ACTIVE` и учится.
+      await service.add(GROUP_ID, { studentIds: [STUDENT_ID] });
+
+      expect(repository.setStudentStatuses).not.toHaveBeenCalled();
+    });
+
+    it('перевод пересчитывает переведённых', async () => {
+      repository.findMemberships.mockResolvedValue([row()]);
+      withMemberships(membership(GroupStudentStatus.ACTIVE));
+
+      await service.transfer(GROUP_ID, {
+        studentIds: [STUDENT_ID],
+        targetGroupId: OTHER_GROUP_ID,
+        reason: 'Перевод в вечерний поток',
+      });
+
+      expect(repository.findStudentsWithMemberships).toHaveBeenCalledWith([STUDENT_ID]);
+    });
+
+    it('исключение из состава пересчитывает профиль', async () => {
+      repository.findStudentsWithMemberships.mockResolvedValue([
+        { id: STUDENT_ID, status: StudentStatus.ACTIVE, groups: [] },
+      ]);
+
+      await service.remove(GROUP_ID, STUDENT_ID);
+
+      expect(repository.findStudentsWithMemberships).toHaveBeenCalledWith([STUDENT_ID]);
+      // Профиль без единого членства правило не трогает: им управляет оператор.
+      expect(repository.setStudentStatuses).not.toHaveBeenCalled();
+    });
+
+    it('импорт пересчитывает зачисленных', async () => {
+      withMemberships(membership(GroupStudentStatus.ACTIVE));
+
+      await service.importCsv(GROUP_ID, { csv: 'Телефон\n+992901234567' });
+
+      expect(repository.setStudentStatuses).toHaveBeenCalledWith([
+        { studentId: STUDENT_ID, status: StudentStatus.ACTIVE },
+      ]);
     });
   });
 

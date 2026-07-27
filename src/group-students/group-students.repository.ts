@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, StudentStatus } from '@prisma/client';
 import { GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
@@ -58,6 +58,24 @@ export type CompetingMembership = Prisma.GroupStudentGetPayload<{
     student: { select: { firstName: true; lastName: true } };
   };
 }>;
+
+/**
+ * Профиль вместе со всеми его членствами — из них выводится статус студента
+ * (ТЗ 5.3). Читаются и закрытые: правило смотрит на последнее по времени.
+ */
+export type StudentStatusSnapshot = Prisma.StudentGetPayload<{
+  select: {
+    id: true;
+    status: true;
+    groups: { select: { status: true; statusChangedAt: true } };
+  };
+}>;
+
+/** Новый статус профиля, посчитанный сервисом. */
+export interface StudentStatusUpdate {
+  studentId: string;
+  status: StudentStatus;
+}
 
 /** Отбор состава: общий для постраничного списка и для выгрузки. */
 export interface GroupStudentFilter {
@@ -351,5 +369,38 @@ export class GroupStudentsRepository {
     await this.prisma.groupStudent.delete({
       where: { groupId_studentId: { groupId, studentId } },
     });
+  }
+
+  /**
+   * Профили вместе со **всеми** их членствами — во всех группах, а не только
+   * в той, где что-то менялось: статус студента отвечает за него целиком,
+   * и уход с одного курса ничего не значит, пока он учится на другом.
+   */
+  findStudentsWithMemberships(studentIds: string[]): Promise<StudentStatusSnapshot[]> {
+    return this.prisma.student.findMany({
+      where: { id: { in: studentIds } },
+      select: {
+        id: true,
+        status: true,
+        groups: { select: { status: true, statusChangedAt: true } },
+      },
+    });
+  }
+
+  /**
+   * Пересчитанные статусы профилей — одной транзакцией.
+   *
+   * Сюда приходят только те, у кого статус действительно меняется: холостая
+   * запись двигала бы `updatedAt` и превращала бы «когда правили карточку»
+   * в бессмысленное значение.
+   */
+  async setStudentStatuses(updates: StudentStatusUpdate[]): Promise<void> {
+    if (updates.length === 0) return;
+
+    await this.prisma.$transaction(
+      updates.map(({ studentId, status }) =>
+        this.prisma.student.update({ where: { id: studentId }, data: { status } }),
+      ),
+    );
   }
 }

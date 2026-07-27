@@ -9,6 +9,7 @@ import { GroupStudentStatus } from '@prisma/client';
 
 import { BusinessRuleException, formatCsv, formatIsoDate, Paginated, parseCsv } from '../common';
 import { PhoneService } from '../phone/phone.service';
+import { deriveStudentStatus } from '../students/student-status';
 import type {
   AddGroupStudentsDto,
   ChangeGroupStudentsStatusDto,
@@ -35,6 +36,7 @@ import type {
   CompetingMembership,
   GroupStudentRow,
   StudentGroup,
+  StudentStatusUpdate,
 } from './group-students.repository';
 import { GroupStudentsRepository } from './group-students.repository';
 
@@ -70,8 +72,10 @@ const MAX_REPORTED_ERRORS = 50;
  *   - смена статуса и перевод требуют причины (ТЗ 5.5) и не удаляют членство:
  *     закрытая строка и есть учебная история студента.
  *
- * Статус членства не трогает `Student.status` (ТЗ 5.3): им управляет карточка
- * студента, а уход из одной группы не означает ухода из центра.
+ * Статус членства и статус профиля (`Student.status`, ТЗ 5.3) — разные вещи,
+ * но не независимые: после каждого изменения состава профиль пересчитывается
+ * из **всех** членств студента (`syncProfileStatuses`). Уход из одной группы
+ * не означает ухода из центра, пока человек учится в другой.
  */
 @Injectable()
 export class GroupStudentsService {
@@ -112,6 +116,7 @@ export class GroupStudentsService {
     await this.assertFreeOfCourse(group, dto.studentIds, [groupId]);
 
     const students = await this.repository.enroll(groupId, dto.studentIds, new Date());
+    await this.syncProfileStatuses(dto.studentIds);
     const enrolledCount = await this.repository.countActive(groupId);
 
     this.logger.log(
@@ -156,6 +161,7 @@ export class GroupStudentsService {
       dto.reason,
       new Date(),
     );
+    await this.syncProfileStatuses(dto.studentIds);
     const enrolledCount = await this.repository.countActive(groupId);
 
     this.logger.log(
@@ -198,6 +204,7 @@ export class GroupStudentsService {
       reason: dto.reason,
       changedAt: new Date(),
     });
+    await this.syncProfileStatuses(dto.studentIds);
     const enrolledCount = await this.repository.countActive(groupId);
 
     this.logger.log(
@@ -266,6 +273,7 @@ export class GroupStudentsService {
     const studentIds = await this.readImportFile(group, dto.csv);
 
     const students = await this.repository.enroll(groupId, studentIds, new Date());
+    await this.syncProfileStatuses(studentIds);
     const enrolledCount = await this.repository.countActive(groupId);
 
     this.logger.log(
@@ -286,11 +294,46 @@ export class GroupStudentsService {
     const membership = await this.requireMembership(groupId, studentId);
 
     await this.repository.delete(groupId, studentId);
+    await this.syncProfileStatuses([studentId]);
     const enrolledCount = await this.repository.countActive(groupId);
 
     this.logger.log(`Студент ${fullName(membership.student)} убран из состава группы ${groupId}`);
 
     return { groupId, studentId, fullName: fullName(membership.student), enrolledCount };
+  }
+
+  /**
+   * Пересчитывает статусы профилей затронутых студентов (ТЗ 5.3) — правило
+   * `deriveStudentStatus` из модуля студентов. Связь между статусом членства
+   * и статусом профиля решена в сессии 0014; сессия 0012 оставила её открытой,
+   * потому что до карточки студента опереть правило было не на что.
+   *
+   * Пересчёт идёт **после** транзакции состава, а не внутри неё. Так он
+   * проверяем по всей цепочке (сервис → репозиторий) и не заставляет слой
+   * данных знать правило. Цена честная: сбой между двумя шагами оставит
+   * профиль с прежним статусом при верных членствах. Это восстановимо —
+   * вывод идемпотентен, и следующая же операция над составом его исправит, —
+   * а обратный порядок ошибки (верный статус при неверных членствах)
+   * был бы порчей самих данных.
+   */
+  private async syncProfileStatuses(studentIds: string[]): Promise<void> {
+    const students = await this.repository.findStudentsWithMemberships(studentIds);
+
+    const updates = students.reduce<StudentStatusUpdate[]>((acc, student) => {
+      const status = deriveStudentStatus(student.status, student.groups);
+      if (status !== null) acc.push({ studentId: student.id, status });
+
+      return acc;
+    }, []);
+
+    if (updates.length === 0) return;
+
+    await this.repository.setStudentStatuses(updates);
+    this.logger.log(
+      `Пересчитан статус профиля у студентов: ${updates
+        .map(({ studentId, status }) => `${studentId} → ${status}`)
+        .join(', ')}`,
+    );
   }
 
   // ──────────────────────────────── Импорт ──────────────────────────────────

@@ -2,4 +2,6 @@
 // затягивают DTO и типы других модулей, а модуль тянет контроллер и репозиторий.
 export * from './dto';
 export * from './student-promotion.service';
+export * from './student-status';
 export * from './students.repository';
+export * from './students.service';

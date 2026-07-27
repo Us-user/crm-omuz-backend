@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import type { Gender, Prisma } from '@prisma/client';
-import { AccountType } from '@prisma/client';
+import type { Gender, Prisma, StudentStatus } from '@prisma/client';
+import { AccountType, GroupStudentStatus } from '@prisma/client';
 
+import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
+import { StudentSortField } from './dto';
 
 /** Всё, что нужно знать о студенте, чтобы решить и выполнить перевод в сотрудники. */
 const STUDENT_PROMOTION_SELECT = {
@@ -83,6 +85,88 @@ export interface PromoteStudentResult {
   revokedSessions: number;
 }
 
+/** Карточка студента (ТЗ 5.3): профиль, филиал, аккаунт и действующие группы. */
+const STUDENT_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  phone: true,
+  birthDate: true,
+  gender: true,
+  address: true,
+  email: true,
+  parentPhone: true,
+  extraPhones: true,
+  telegram: true,
+  photoUrl: true,
+  notes: true,
+  status: true,
+  createdAt: true,
+  branch: { select: { id: true, name: true } },
+  // Хеш пароля в выборку не входит: наружу уходит только то, что показывает карточка.
+  account: { select: { id: true, phone: true, email: true, status: true } },
+  // Только действующие членства: закрытые — это история, и в строке списка
+  // «где учится сейчас» они дали бы неверный ответ. Их число отдаёт `_count`.
+  groups: {
+    where: { status: GroupStudentStatus.ACTIVE },
+    select: {
+      group: {
+        select: { id: true, name: true, courseId: true, course: { select: { title: true } } },
+      },
+    },
+    orderBy: { group: { name: 'asc' } },
+  },
+  _count: { select: { groups: true } },
+} satisfies Prisma.StudentSelect;
+
+export type StudentRow = Prisma.StudentGetPayload<{ select: typeof STUDENT_SELECT }>;
+
+/** Что мешает удалить профиль: учебная история и перевод в сотрудники. */
+export type StudentDeletionCheck = Prisma.StudentGetPayload<{
+  select: {
+    id: true;
+    firstName: true;
+    lastName: true;
+    accountId: true;
+    promotedEmployee: { select: { id: true } };
+    _count: { select: { groups: true } };
+  };
+}>;
+
+export interface StudentListParams {
+  search?: string;
+  status?: StudentStatus;
+  branchId?: string;
+  groupId?: string;
+  courseId?: string;
+  hasAccount?: boolean;
+  sort: StudentSortField;
+  order: SortOrder;
+  skip: number;
+  take: number;
+}
+
+/** Поля профиля, как их пишет сервис: `null` — очистить, значение — записать. */
+export interface StudentWriteInput {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  birthDate: Date | null;
+  gender: Gender | null;
+  address: string | null;
+  email: string | null;
+  parentPhone: string | null;
+  extraPhones: string[];
+  telegram: string | null;
+  photoUrl: string | null;
+  notes: string | null;
+  branchId: string | null;
+  status?: StudentStatus;
+}
+
+/** `undefined` — колонку не менять; значение (включая `null`) — записать. */
+export type StudentUpdateInput = Partial<StudentWriteInput>;
+
 /**
  * Доступ к данным студентов (`Controller → Service → Repository`).
  * Бизнес-правил здесь нет — только запросы Prisma.
@@ -90,6 +174,121 @@ export interface PromoteStudentResult {
 @Injectable()
 export class StudentsRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  async findMany(params: StudentListParams): Promise<{ rows: StudentRow[]; total: number }> {
+    const where: Prisma.StudentWhereInput = {
+      ...(params.status === undefined ? {} : { status: params.status }),
+      ...(params.branchId === undefined ? {} : { branchId: params.branchId }),
+      ...(params.hasAccount === undefined
+        ? {}
+        : { accountId: params.hasAccount ? { not: null } : null }),
+      // Фильтры «Group» и «Course» (ТЗ 5.3) смотрят только на действующие
+      // членства: «студенты группы» — это те, кто в ней учится, а не все,
+      // кто когда-либо в ней числился.
+      ...(params.groupId === undefined
+        ? {}
+        : { groups: { some: { groupId: params.groupId, status: GroupStudentStatus.ACTIVE } } }),
+      ...(params.courseId === undefined
+        ? {}
+        : {
+            groups: {
+              some: { status: GroupStudentStatus.ACTIVE, group: { courseId: params.courseId } },
+            },
+          }),
+      ...(params.search === undefined
+        ? {}
+        : {
+            OR: [
+              { firstName: { contains: params.search, mode: 'insensitive' } },
+              { lastName: { contains: params.search, mode: 'insensitive' } },
+              { phone: { contains: params.search } },
+              { email: { contains: params.search, mode: 'insensitive' } },
+            ],
+          }),
+    };
+
+    // Ключ `orderBy` собирается ветвлением, а не из строки: вычисляемое поле
+    // прошло бы типизацию Prisma и упало бы уже в БД.
+    const orderBy: Prisma.StudentOrderByWithRelationInput[] =
+      params.sort === StudentSortField.CreatedAt
+        ? [{ createdAt: params.order }]
+        : [{ lastName: params.order }, { firstName: params.order }];
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.student.findMany({
+        where,
+        select: STUDENT_SELECT,
+        orderBy,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.student.count({ where }),
+    ]);
+
+    return { rows, total };
+  }
+
+  findById(id: string): Promise<StudentRow | null> {
+    return this.prisma.student.findUnique({ where: { id }, select: STUDENT_SELECT });
+  }
+
+  /**
+   * Телефон студента уникален — проверка до вставки, чтобы отдать понятный 409
+   * вместо обезличенного «запись с такими значениями уже существует» (P2002).
+   */
+  findByPhone(phone: string): Promise<{ id: string; firstName: string; lastName: string } | null> {
+    return this.prisma.student.findUnique({
+      where: { phone },
+      select: { id: true, firstName: true, lastName: true },
+    });
+  }
+
+  /** Существует ли филиал из тела запроса: несуществующий даёт 422, а не ошибку внешнего ключа. */
+  findBranch(id: string): Promise<{ id: string } | null> {
+    return this.prisma.branch.findUnique({ where: { id }, select: { id: true } });
+  }
+
+  /** Что держит профиль: членства в группах и перевод в сотрудники. */
+  findForDeletion(id: string): Promise<StudentDeletionCheck | null> {
+    return this.prisma.student.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        accountId: true,
+        promotedEmployee: { select: { id: true } },
+        _count: { select: { groups: true } },
+      },
+    });
+  }
+
+  create(input: StudentWriteInput): Promise<StudentRow> {
+    return this.prisma.student.create({ data: input, select: STUDENT_SELECT });
+  }
+
+  update(id: string, input: StudentUpdateInput): Promise<StudentRow> {
+    // `undefined` Prisma пропускает: не переданное поле остаётся прежним.
+    return this.prisma.student.update({ where: { id }, data: input, select: STUDENT_SELECT });
+  }
+
+  /**
+   * Удаление профиля вместе с его аккаунтом, одной транзакцией.
+   *
+   * Аккаунт уходит следом не из аккуратности, а по ТЗ 3.1: к аккаунту привязан
+   * профиль Student ИЛИ Employee. Оставленный логин без профиля — это вход
+   * в систему от имени человека, которого в ней больше нет. Сессии и коды
+   * сброса пароля унесёт каскад со стороны `Account`.
+   */
+  async delete(id: string, accountId: string | null): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.student.delete({ where: { id } });
+
+      if (accountId !== null) {
+        await tx.account.delete({ where: { id: accountId } });
+      }
+    });
+  }
 
   findForPromotion(id: string): Promise<StudentForPromotion | null> {
     return this.prisma.student.findUnique({ where: { id }, select: STUDENT_PROMOTION_SELECT });

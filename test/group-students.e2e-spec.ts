@@ -22,6 +22,8 @@ import type {
   StudentByPhone,
   StudentCandidate,
   StudentGroup,
+  StudentStatusSnapshot,
+  StudentStatusUpdate,
   TransferInput,
 } from 'src/group-students/group-students.repository';
 import { LoggerModule } from 'src/logger/logger.module';
@@ -308,6 +310,32 @@ class InMemoryStudentsStore {
     return Promise.resolve();
   }
 
+  findStudentsWithMemberships(studentIds: string[]): Promise<StudentStatusSnapshot[]> {
+    return Promise.resolve(
+      studentIds
+        .map((id) => this.students.get(id))
+        .filter((student): student is StoredStudent => student !== undefined)
+        .map((student) => ({
+          id: student.id,
+          status: student.status,
+          // Членства **во всех** группах, а не только в той, где что-то
+          // менялось: статус профиля отвечает за студента целиком.
+          groups: [...this.memberships.values()]
+            .filter((membership) => membership.studentId === student.id)
+            .map(({ status, statusChangedAt }) => ({ status, statusChangedAt })),
+        })),
+    );
+  }
+
+  setStudentStatuses(updates: StudentStatusUpdate[]): Promise<void> {
+    for (const { studentId, status } of updates) {
+      const student = this.students.get(studentId);
+      if (student) student.status = status;
+    }
+
+    return Promise.resolve();
+  }
+
   private blank(groupId: string, studentId: string): GroupStudentRow {
     const student = this.students.get(studentId);
     if (!student) throw new Error('Студента нет: тест построен неверно');
@@ -422,6 +450,9 @@ describe('Состав группы (e2e, хранилище в памяти)', 
         ) => store.changeStatus(groupId, studentIds, status, reason, changedAt),
         transfer: (input: TransferInput) => store.transfer(input),
         delete: (groupId: string, studentId: string) => store.delete(groupId, studentId),
+        findStudentsWithMemberships: (studentIds: string[]) =>
+          store.findStudentsWithMemberships(studentIds),
+        setStudentStatuses: (updates: StudentStatusUpdate[]) => store.setStudentStatuses(updates),
       })
       .compile();
 
@@ -1140,6 +1171,164 @@ describe('Состав группы (e2e, хранилище в памяти)', 
       await send('post', `/api/v1/groups/${twinGroup.id}/students`, token, {
         studentIds: [nigina.id],
       }).expect(201);
+    });
+  });
+
+  describe('Статус профиля пересчитывается по членствам (ТЗ 5.3)', () => {
+    /** Статус профиля в хранилище — то, что увидит карточка студента. */
+    const profileStatus = (id: string): StudentStatus | undefined => store.students.get(id)?.status;
+
+    it('зачисление возвращает профиль в ACTIVE', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+      store.students.get(nigina.id)!.status = StudentStatus.NO_ACTIVE;
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.ACTIVE);
+    });
+
+    it('уход из единственной группы переводит профиль в NO_ACTIVE (ТЗ 5.12)', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Переехал в другой город',
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.NO_ACTIVE);
+    });
+
+    it('уход из одной группы не трогает профиль, пока студент учится в другой', async () => {
+      const { group, otherCourseGroup, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${otherCourseGroup.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Курс оказался не тот',
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.ACTIVE);
+    });
+
+    it('завершение курса переводит профиль в FINISHED', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.FINISHED,
+        reason: 'Курс пройден',
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.FINISHED);
+    });
+
+    it('выпускник, бросивший следующий курс, становится NO_ACTIVE', async () => {
+      const { group, otherCourseGroup, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.FINISHED,
+        reason: 'Курс пройден',
+      }).expect(200);
+
+      await send('post', `/api/v1/groups/${otherCourseGroup.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${otherCourseGroup.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Не потянул нагрузку',
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.NO_ACTIVE);
+    });
+
+    it('перевод в другую группу оставляет профиль ACTIVE', async () => {
+      const { group, twinGroup, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/transfer`, token, {
+        studentIds: [nigina.id],
+        targetGroupId: twinGroup.id,
+        reason: 'Перевод в вечерний поток',
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.ACTIVE);
+    });
+
+    it('заблокированный студент автоматикой не разблокируется', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+      store.students.get(nigina.id)!.status = StudentStatus.BLOCK;
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.BLOCK);
+    });
+
+    it('импорт возвращает покинувшего в ACTIVE', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+      const importer = await actor('Permission.Groups.Import');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('post', `/api/v1/groups/${group.id}/students/change-status`, token, {
+        studentIds: [nigina.id],
+        status: GroupStudentStatus.LEFT,
+        reason: 'Пропал на месяц',
+      }).expect(200);
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.NO_ACTIVE);
+
+      await send('post', `/api/v1/groups/${group.id}/students/import`, importer, {
+        csv: `Телефон\n${nigina.phone}`,
+      }).expect(200);
+
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.ACTIVE);
+    });
+
+    it('профиль без единого членства правило не трогает', async () => {
+      const { group, nigina } = scene();
+      const token = await actor('Permission.Groups.ManageStudents');
+
+      await send('post', `/api/v1/groups/${group.id}/students`, token, {
+        studentIds: [nigina.id],
+      }).expect(201);
+      await send('delete', `/api/v1/groups/${group.id}/students/${nigina.id}`, token).expect(200);
+
+      // Членств не осталось — статусом снова управляет карточка студента,
+      // и последнее известное значение остаётся как есть.
+      expect(profileStatus(nigina.id)).toBe(StudentStatus.ACTIVE);
     });
   });
 
