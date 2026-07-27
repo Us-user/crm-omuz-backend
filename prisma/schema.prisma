@@ -254,6 +254,15 @@ model Employee {
   /// ставка **того месяца**, за который начисляется зарплата (ТЗ 5.16).
   mentorLevels MentorLevelHistory[]
 
+  /// Заявки на аванс этого сотрудника (ТЗ 5.14).
+  avansRequests AvansRequest[] @relation("AvansEmployee")
+
+  /// Заявки на аванс, заведённые этим сотрудником (в том числе от чужого имени).
+  createdAvansRequests AvansRequest[] @relation("AvansAuthor")
+
+  /// Заявки на аванс, рассмотренные этим сотрудником (ТЗ 5.16, Фаза 9).
+  reviewedAvansRequests AvansRequest[] @relation("AvansReviewer")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1307,4 +1316,76 @@ model MentorLevelHistory {
   /// Зарплатная ведомость месяца читает всех сотрудников сразу (ТЗ 5.16).
   @@index([month])
   @@map("mentor_level_history")
+}
+
+/// Состояние заявки на аванс (ТЗ 5.16: «заявка ментора → Approve/Deny»).
+enum AvansStatus {
+  /// Подана и ждёт рассмотрения бухгалтерией.
+  PENDING
+  /// Одобрена: по ТЗ 5.16 одобренный аванс становится `Prepaid` в расчёте месяца.
+  APPROVED
+  /// Отклонена с причиной.
+  DENIED
+}
+
+/// Заявка сотрудника на аванс (ТЗ 5.14: `GET/POST /employees/{id}/avans`).
+///
+/// Подача — Фаза 6, рассмотрение — бухгалтерия (`/accounting/avans/{id}/approve|deny`,
+/// ТЗ 5.16, Фаза 9). Колонки рассмотрения заведены сразу и необязательны:
+/// миграции данных они не требуют, а без них Фазе 9 пришлось бы второй раз
+/// трогать ту же таблицу — то же соображение, по которому сессия 0007 завела
+/// `Student.branchId` заранее.
+model AvansRequest {
+  id String @id @default(uuid()) @db.Uuid
+
+  employeeId String   @db.Uuid
+  /// `CASCADE`: заявка — часть кадровой карточки человека, а не самостоятельная
+  /// запись со своим автором. Профиль сотрудника и так удаляется только
+  /// «чистым» (ТЗ 5.14, сессия 0020).
+  employee   Employee @relation("AvansEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  /// Запрошенная сумма в сомони (ТЗ 1: валюта TJS). `Decimal`, как часовая
+  /// ставка: в Фазе 9 одобренная заявка вычитается из зарплаты месяца
+  /// (ТЗ 5.16: «одобренный = Prepaid»), а деньги в двоичной плавающей точке
+  /// накапливают ошибку на сложении.
+  amount Decimal @db.Decimal(12, 2)
+
+  /// Причина — обязательна: заявку рассматривает другой человек, и без «зачем»
+  /// решать ему нечего.
+  reason String
+
+  /// Месяц зарплаты, из которой удержится аванс (первое число, `@db.Date`,
+  /// наружу — `YYYY-MM`). Тот же формат, что у истории уровней, и по той же
+  /// причине: `Prepaid` по ТЗ 5.16 относится к **месяцу**, а не к дате
+  /// одобрения, иначе заявка за сентябрь, одобренная 2 октября, легла бы
+  /// не в тот расчёт.
+  month DateTime @db.Date
+
+  status AvansStatus @default(PENDING)
+
+  /// Кто завёл заявку (из токена). `null` — у аккаунта нет профиля сотрудника
+  /// или профиль удалён; сама заявка при этом остаётся: она о том, **кому**
+  /// аванс, а не о том, кто нажал кнопку.
+  createdById String?   @db.Uuid
+  createdBy   Employee? @relation("AvansAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  /// Рассмотрение — Фаза 9. Статус без «кто и когда» не отвечал бы на вопрос,
+  /// на каком основании выданы деньги.
+  reviewedById  String?   @db.Uuid
+  reviewedBy    Employee? @relation("AvansReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt    DateTime?
+  /// Комментарий рассмотревшего (ТЗ 5.16: «Approve/Deny (сумма + причина)»).
+  reviewComment String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Заявки сотрудника и проверка «нет ли уже нерассмотренной» (одна `PENDING`
+  /// на сотрудника — решение сессии 0022).
+  @@index([employeeId, status])
+  /// Очередь бухгалтерии: что ждёт рассмотрения, свежие сверху (ТЗ 5.16, Фаза 9).
+  @@index([status, createdAt])
+  /// Зарплатная ведомость месяца читает авансы всех сотрудников сразу (ТЗ 5.16).
+  @@index([month])
+  @@map("avans_requests")
 }

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AuthModule } from './auth/auth.module';
+import { AvansModule } from './avans/avans.module';
 import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
@@ -53,6 +54,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     PerformanceModule,
     EmployeesModule,
     MentorLevelsModule,
+    AvansModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,
