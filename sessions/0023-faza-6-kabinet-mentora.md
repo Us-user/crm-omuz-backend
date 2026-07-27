@@ -246,12 +246,18 @@ Courses, SMS mailings» (ТЗ 5.4). Сессия 0022 оставила его с
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001, в CI набор зелёный.
 
-**Проверено в CI после пуша** (run `<номер>`, коммит `<хеш>`):
-- `npx prisma migrate deploy` — все шестнадцать прежних миграций применены к реальному
+**Проверено в CI после пуша** (run `30287046677`, коммит `7d9ee5f`, зелёный):
+- `npx prisma migrate deploy` — все **шестнадцать** прежних миграций применены к реальному
   PostgreSQL 16 (новых в этой сессии нет);
 - `npm test` — 944 теста, 49 наборов;
-- `npm run test:e2e` целиком — 23 набора, 719 тестов, включая `health.e2e-spec.ts`
-  с полным `AppModule` против настоящих PostgreSQL и Redis.
+- `npm run test:e2e` целиком — **23 набора, 719 тестов** (было 22 и 672), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Employees + **MentorCabinet** + MentorLevels + Avans +
+  Branches + Rooms + Courses + Groups + GroupJournal + GroupMentors + GroupSchedule +
+  GroupStudents + Syllabus) против настоящих PostgreSQL и Redis: приложение с новым
+  модулем поднимается и подтверждает `database: up` — то есть `MentorCabinetModule`,
+  импортирующий `AvansModule`, DI не сломал.
 
 **НЕ проверено (честно):**
 - **Prisma-запросы `MentorCabinetRepository` на настоящей БД не выполнялись.** В e2e
@@ -328,3 +334,10 @@ server`) — известное состояние окружения с сес�
 Фаза 11) и **автовыпуск** — по какому событию срабатывает завершение группы курса
 с «Is last course» (смена статуса на `FINISHED` руками или наступление `endDate`);
 от второго зависит, нужна ли Фазе 7 фоновая задача.
+
+## Коммит
+
+- `7d9ee5f` — «Фаза 6: кабинет ментора» (18 файлов, +3235 −8).
+- На `7d9ee5f` прогнан зелёный CI (run `30287046677`).
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
+- Репозиторий: https://github.com/Us-user/crm-omuz-backend
