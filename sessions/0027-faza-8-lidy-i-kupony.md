@@ -278,7 +278,23 @@
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
-**Проверено в CI после пуша** (см. раздел «Коммит»).
+**Проверено в CI после пуша** (run `30323462719`, коммит `33f32fb`, зелёный):
+- `npx prisma migrate deploy` — все **двадцать** миграций применены к реальному
+  PostgreSQL 16, включая новую `20260731120000_phase8_leads_and_coupons`: enum `LeadType`,
+  три таблицы (`leads`, `coupons`, `coupon_courses`), уникальные индексы
+  `leads.convertedStudentId` и `coupons.name`, составной первичный ключ
+  `(couponId, courseId)`, девять обычных индексов и шесть внешних ключей
+  (`RESTRICT` на курс, купон, филиал и профиль студента; `CASCADE` на купон в связке)
+  в БД разворачиваются;
+- `npm test` — 1189 тестов, 59 наборов;
+- `npm run test:e2e` целиком — **27 наборов, 876 тестов** (было 26 и 834), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Leaders + **Leads** + **Coupons** + LeftCourses +
+  Graduates + Employees + MentorCabinet + MentorLevels + Avans + Branches + Rooms +
+  Courses + Groups + GroupJournal + GroupMentors + GroupSchedule + GroupStudents +
+  Syllabus) против настоящих PostgreSQL и Redis: приложение с двумя новыми модулями
+  поднимается и подтверждает `database: up`.
 
 **НЕ проверено (честно):**
 - **Prisma-запросы `LeadsRepository` и `CouponsRepository` на настоящей БД
@@ -367,6 +383,7 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- <хеш будет вписан после пуша> — «Фаза 8: лиды, клиенты и купоны».
+- `33f32fb` — «Фаза 8: лиды, клиенты и купоны» (36 файлов, +4380 −27).
+- На `33f32fb` прогнан зелёный CI (run `30323462719`).
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
