@@ -284,6 +284,8 @@ export class StudentsService {
       ['начисления коинов', student._count.coinTransactions],
       ['победы в рейтинге месяца', student._count.monthlyWins],
       ['выпуски с курсов', student._count.graduations],
+      ['начисления за обучение', student._count.payments],
+      ['платежи', student._count.paymentTransactions],
     ].filter(([, count]) => (count as number) > 0);
 
     if (held.length > 0) {

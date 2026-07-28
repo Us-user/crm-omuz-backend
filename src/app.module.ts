@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
+import { AccountingModule } from './accounting/accounting.module';
 import { AuthModule } from './auth/auth.module';
 import { AvansModule } from './avans/avans.module';
 import { BranchesModule } from './branches/branches.module';
@@ -67,6 +68,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     MentorCabinetModule,
     MentorLevelsModule,
     AvansModule,
+    AccountingModule,
     BranchesModule,
     RoomsModule,
     CoursesModule,

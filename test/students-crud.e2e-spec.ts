@@ -238,6 +238,10 @@ class InMemoryStudentsStore {
         coinTransactions: 0,
         monthlyWins: 0,
         graduations: 0,
+        // Начисления и платежи (ТЗ 5.16) этот набор не заводит — их проверяет
+        // `accounting.e2e-spec.ts`.
+        payments: 0,
+        paymentTransactions: 0,
       },
     });
   }

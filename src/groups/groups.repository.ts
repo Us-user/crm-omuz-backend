@@ -229,6 +229,15 @@ export class GroupsRepository {
     return this.prisma.graduate.count({ where: { groupId } });
   }
 
+  /**
+   * Сколько месяцев начислено по группе (ТЗ 5.16). Тоже отдельно от состава
+   * и по той же причине: членство убирают из состава руками, а начисления
+   * и принятые по ним деньги остаются — вместе с группой исчезла бы касса.
+   */
+  countCharges(groupId: string): Promise<number> {
+    return this.prisma.studentPayment.count({ where: { groupId } });
+  }
+
   create(input: GroupWriteInput): Promise<GroupRow> {
     return this.prisma.group.create({ data: input, select: GROUP_SELECT });
   }

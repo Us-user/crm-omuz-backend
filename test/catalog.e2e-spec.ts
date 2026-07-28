@@ -691,6 +691,9 @@ describe('Справочники учебного контура (e2e, хран�
         // Выпускников в этом наборе нет — их и автовыпуск (ТЗ 5.11) проверяет
         // `graduates.e2e-spec.ts`, где живут журнал, состав и записи выпуска.
         countGraduates: () => Promise.resolve(0),
+        // Начислений (ТЗ 5.16) этот набор не заводит — их проверяет
+        // `accounting.e2e-spec.ts`.
+        countCharges: () => Promise.resolve(0),
         // Журнала в этом наборе нет, поэтому счётчики категорий выходят
         // нулевыми: их проверяет `performance.e2e-spec.ts`, где есть недели.
         findActivity: () => Promise.resolve({ members: [], results: [] }),

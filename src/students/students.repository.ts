@@ -149,6 +149,8 @@ export type StudentDeletionCheck = Prisma.StudentGetPayload<{
         coinTransactions: true;
         monthlyWins: true;
         graduations: true;
+        payments: true;
+        paymentTransactions: true;
       };
     };
   };
@@ -351,6 +353,11 @@ export class StudentsRepository {
             // Выпуски (ТЗ 5.11) — по той же причине: вместе с профилем исчезли
             // бы факт окончания курса и выданный сертификат.
             graduations: true,
+            // Начисления и платежи (ТЗ 5.16): касса не должна редеть от удаления
+            // профиля. Внешние ключи стоят `RESTRICT`, но причину отказа наружу
+            // называет сервис, а не ошибка связи.
+            payments: true,
+            paymentTransactions: true,
           },
         },
       },

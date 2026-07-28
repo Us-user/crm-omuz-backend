@@ -58,16 +58,38 @@ const row = (overrides: Partial<StudentRow> = {}): StudentRow => ({
   ...overrides,
 });
 
-const deletable = (overrides: Partial<StudentDeletionCheck> = {}): StudentDeletionCheck => ({
-  id: STUDENT_ID,
-  firstName: 'Нигина',
-  lastName: 'Каримова',
-  accountId: null,
-  promotedEmployee: null,
-  leadOrigin: null,
-  _count: { groups: 0, journalEntries: 0, coinTransactions: 0, monthlyWins: 0, graduations: 0 },
-  ...overrides,
-});
+/**
+ * Счётчики держателей профиля перечисляются частично: их список растёт
+ * с каждой фазой (журнал 0018, победы месяца 0024, выпуски 0026, оплаты 0029),
+ * и полный литерал в каждом тесте пришлось бы дописывать всякий раз заново.
+ */
+const deletable = (
+  overrides: Partial<Omit<StudentDeletionCheck, '_count'>> & {
+    _count?: Partial<StudentDeletionCheck['_count']>;
+  } = {},
+): StudentDeletionCheck => {
+  const { _count, ...rest } = overrides;
+
+  return {
+    id: STUDENT_ID,
+    firstName: 'Нигина',
+    lastName: 'Каримова',
+    accountId: null,
+    promotedEmployee: null,
+    leadOrigin: null,
+    ...rest,
+    _count: {
+      groups: 0,
+      journalEntries: 0,
+      coinTransactions: 0,
+      monthlyWins: 0,
+      graduations: 0,
+      payments: 0,
+      paymentTransactions: 0,
+      ..._count,
+    },
+  };
+};
 
 /** Поля записи без `undefined`: их Prisma пропускает, оставляя колонку прежней. */
 const defined = (input: unknown): Partial<StudentRow> =>
@@ -550,6 +572,24 @@ describe('StudentsService', () => {
       );
 
       await expect(service.remove(STUDENT_ID)).rejects.toThrow(/победы в рейтинге месяца \(2\)/);
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    // Начисления и платежи (ТЗ 5.16) держат профиль так же, как журнал и коины:
+    // вместе с ним исчезла бы касса, по которой сходится бухгалтерия.
+    it('409 на студента с начислениями за обучение', async () => {
+      repository.findForDeletion.mockResolvedValue(deletable({ _count: { payments: 4 } }));
+
+      await expect(service.remove(STUDENT_ID)).rejects.toThrow(/начисления за обучение \(4\)/);
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('409 на студента с принятыми платежами', async () => {
+      repository.findForDeletion.mockResolvedValue(
+        deletable({ _count: { paymentTransactions: 2 } }),
+      );
+
+      await expect(service.remove(STUDENT_ID)).rejects.toThrow(/платежи \(2\)/);
       expect(repository.delete).not.toHaveBeenCalled();
     });
 

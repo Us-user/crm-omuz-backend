@@ -236,6 +236,7 @@ export class GroupsService {
     const group = await this.require(id);
     await this.assertNoStudents(id);
     await this.assertNoGraduates(id);
+    await this.assertNoCharges(id);
 
     await this.repository.delete(id);
     this.logger.log(`Удалена группа ${group.name} (${id})`);
@@ -356,6 +357,22 @@ export class GroupsService {
     throw new ConflictException(
       `Из группы выпустились студенты (${String(graduates)}) — вместе с ней исчезли бы ` +
         'записи о выпуске и выданные сертификаты',
+    );
+  }
+
+  /**
+   * Группу с начислениями удалить нельзя (ТЗ 5.16). Та же форма правила, что
+   * у выпускников: внешний ключ `RESTRICT` не пустил бы и так, но причина
+   * должна называться словами. Вместе с группой исчезли бы начисленные месяцы
+   * и принятые по ним деньги, то есть касса перестала бы сходиться.
+   */
+  private async assertNoCharges(groupId: string): Promise<void> {
+    const charges = await this.repository.countCharges(groupId);
+    if (charges === 0) return;
+
+    throw new ConflictException(
+      `По группе есть начисления за обучение (${String(charges)}) — вместе с ней исчезли бы ` +
+        'оплаты студентов',
     );
   }
 }

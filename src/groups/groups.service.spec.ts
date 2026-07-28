@@ -57,6 +57,7 @@ describe('GroupsService', () => {
       | 'countScheduleSlotsWithRoom'
       | 'countStudents'
       | 'countGraduates'
+      | 'countCharges'
       | 'findActivity'
       | 'create'
       | 'update'
@@ -76,6 +77,7 @@ describe('GroupsService', () => {
       countScheduleSlotsWithRoom: jest.fn().mockResolvedValue(0),
       countStudents: jest.fn().mockResolvedValue(0),
       countGraduates: jest.fn().mockResolvedValue(0),
+      countCharges: jest.fn().mockResolvedValue(0),
       findActivity: jest.fn().mockResolvedValue({ members: [], results: [] }),
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
@@ -464,6 +466,26 @@ describe('GroupsService', () => {
 
       await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(ConflictException);
       expect(repository.countGraduates).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    // Начисления (ТЗ 5.16) держат группу так же, как выпуски: вместе с ней
+    // исчезли бы месяцы обучения и принятые по ним деньги.
+    it('409 на группу с начислениями за обучение', async () => {
+      repository.countCharges.mockResolvedValue(6);
+
+      await expect(service.remove(GROUP_ID)).rejects.toMatchObject({
+        response: { message: expect.stringContaining('(6)') },
+      });
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('начисления проверяются отдельно от состава и выпусков', async () => {
+      repository.countStudents.mockResolvedValue(0);
+      repository.countGraduates.mockResolvedValue(0);
+      repository.countCharges.mockResolvedValue(1);
+
+      await expect(service.remove(GROUP_ID)).rejects.toBeInstanceOf(ConflictException);
+      expect(repository.countCharges).toHaveBeenCalledWith(GROUP_ID);
     });
   });
 

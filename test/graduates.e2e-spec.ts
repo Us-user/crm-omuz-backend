@@ -678,6 +678,7 @@ describe('Выпускники (e2e, хранилище в памяти)', () =>
         countScheduleSlotsWithRoom: () => Promise.resolve(0),
         countStudents: (id: string) => store.countGroupStudents(id),
         countGraduates: (id: string) => store.countGroupGraduates(id),
+        countCharges: () => Promise.resolve(0),
         // Журнала в этом наборе нет: счётчики категорий (ТЗ 5.5) проверяет
         // `performance.e2e-spec.ts`, где живут недели и их итоги.
         findActivity: () => Promise.resolve({ members: [], results: [] }),
