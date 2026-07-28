@@ -271,6 +271,23 @@ Overview, Expenses, Budget, Salary, `Avans approve/deny` и Accounting periods �
    отвечал 400 «amount must not be greater than undefined». Поймано e2e-тестом; константа
    переехала в `accounting.ts`, к остальному денежному правилу.
 
+**Проверено в CI после пуша** (run `30360546723`, коммит `3615ed3`, зелёный за 2м43с):
+- `npx prisma migrate deploy` — все **двадцать одна** миграция применена к реальному
+  PostgreSQL 16, включая новую `20260801000000_phase9_payments`: три таблицы
+  (`payment_types`, `student_payments`, `payment_transactions`), уникальный индекс
+  `(studentId, groupId, month)`, восемь обычных индексов и восемь внешних ключей
+  (`RESTRICT` на студента, группу, начисление и способ оплаты; `SET NULL` на авторов)
+  в БД разворачиваются;
+- `npm test` — 1327 тестов, 65 наборов;
+- `npm run test:e2e` целиком — **28 наборов, 946 тестов** (было 27 и 898), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Leaders + Leads + Coupons + LeftCourses + Graduates +
+  Employees + MentorCabinet + MentorLevels + Avans + **Accounting** + Branches + Rooms +
+  Courses + Groups + GroupJournal + GroupMentors + GroupSchedule + GroupStudents +
+  Syllabus) против настоящих PostgreSQL и Redis: приложение с новым модулем поднимается
+  и подтверждает `database: up`.
+
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001; в CI набор зелёный.
 
@@ -362,5 +379,7 @@ server`) — известное состояние окружения с сес�
 
 ## Коммит
 
-- `<хеш>` — «Фаза 9: оплаты студентов, предоплаты и должники».
+- `3615ed3` — «Фаза 9: оплаты студентов, предоплаты и должники» (36 файлов, +5741 −24).
+- На `3615ed3` прогнан зелёный CI (run `30360546723`).
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
