@@ -152,3 +152,38 @@ export class LeadDeletedDto {
   @ApiProperty({ example: 'Каримова Нигина' })
   name!: string;
 }
+
+/** Одно переведённое обращение (ТЗ 5.7: «Transfer в студенты»). */
+export class TransferredLeadDto {
+  @ApiProperty({ format: 'uuid' })
+  leadId!: string;
+
+  @ApiProperty({ example: 'Каримова Нигина' })
+  name!: string;
+
+  @ApiProperty({ format: 'uuid', description: 'Профиль студента, к которому привязано обращение.' })
+  studentId!: string;
+
+  @ApiProperty({
+    enum: ['created', 'linked'],
+    example: 'created',
+    description:
+      '`created` — профиль заведён этим переводом; `linked` — студент с таким телефоном ' +
+      'уже был, и обращение привязано к нему. Второй профиль не заводится: `Student.phone` ' +
+      'уникален. Действие названо явно, чтобы «перевели пятерых» и «завели пять карточек» ' +
+      'не путались между собой.',
+  })
+  action!: 'created' | 'linked';
+}
+
+/** Результат перевода пачки (ТЗ 5.7). */
+export class LeadsTransferredDto {
+  @ApiProperty({ type: [TransferredLeadDto] })
+  transferred!: TransferredLeadDto[];
+
+  @ApiProperty({ example: 2, description: 'Сколько профилей заведено этим переводом.' })
+  created!: number;
+
+  @ApiProperty({ example: 1, description: 'Сколько обращений привязано к существующим профилям.' })
+  linked!: number;
+}

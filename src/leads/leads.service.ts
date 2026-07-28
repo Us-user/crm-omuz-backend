@@ -4,6 +4,7 @@ import {
   BusinessRuleException,
   emptyToNull,
   emptyToNullPatch,
+  formatCsv,
   formatDayTime,
   formatIsoDate,
   formatIsoMonth,
@@ -17,27 +18,58 @@ import { PhoneService } from '../phone';
 import type {
   CreatedLeadDto,
   CreateLeadDto,
+  ExportLeadsQueryDto,
   LeadDeletedDto,
   LeadDto,
   LeadQueryDto,
+  LeadsTransferredDto,
+  TransferLeadsDto,
   UpdateLeadDto,
 } from './dto';
 import { becameClientAtOf } from './leads';
-import type { LeadFilter, LeadRow } from './leads.repository';
+import { LEADS_CSV_HEADER, toCsvRow } from './leads.csv';
+import type { LeadFilter, LeadRow, LeadTransferWrite } from './leads.repository';
 import { LeadsRepository } from './leads.repository';
+import { planLeadTransfers, studentProfileOf } from './leads-transfer';
+
+/** Готовый файл выгрузки: контроллеру остаётся проставить заголовки. */
+export interface LeadsCsvFile {
+  content: string;
+  fileName: string;
+  /** Имя без кириллицы — для заголовка `Content-Disposition` старых клиентов. */
+  asciiFileName: string;
+  rows: number;
+}
+
+/**
+ * Доменные фильтры воронки — общие у постраничного списка и у выгрузки.
+ * Тип собран из `LeadQueryDto`, а не описан заново: разъехавшись, два набора
+ * полей дали бы экран и файл с разным отбором (правило 0013).
+ */
+type LeadFilterQuery = Pick<
+  LeadQueryDto,
+  | 'type'
+  | 'courseId'
+  | 'branchId'
+  | 'couponId'
+  | 'enrollMonth'
+  | 'converted'
+  | 'from'
+  | 'to'
+  | 'search'
+>;
 
 /**
  * Лиды и клиенты (ТЗ 5.7).
  *
- * Первый маркетинговый контур проекта и левый конец жизненного цикла из ТЗ 1:
- * «Лид (реклама) → Client (после пробного дня) → Студент». Стадия хранится
- * типом (`LEAD`/`CLIENT`) вместе с датой перехода — выдуманной машины состояний
- * воронки здесь нет, потому что ТЗ такого перечисления не даёт, а на выдуманные
- * статусы завязались бы отчёты Фазы 10.
+ * Маркетинговый контур проекта и жизненный цикл из ТЗ 1 целиком: «Лид (реклама) →
+ * Client (после пробного дня) → Студент». Стадия хранится типом (`LEAD`/`CLIENT`)
+ * вместе с датой перехода — выдуманной машины состояний воронки здесь нет,
+ * потому что ТЗ такого перечисления не даёт, а на выдуманные статусы завязались
+ * бы отчёты Фазы 10.
  *
- * Правый конец цепочки (`POST /leads/transfer`, ТЗ 5.7) — отдельный кусок:
- * он заводит профиль студента, то есть трогает второй модуль, и у него свои
- * правила про занятый телефон.
+ * Правый конец цепочки — `transfer`: он заводит профиль студента (или привязывает
+ * существующий) и оставляет обращение на месте со ссылкой на профиль.
  */
 @Injectable()
 export class LeadsService {
@@ -49,23 +81,8 @@ export class LeadsService {
   ) {}
 
   async findAll(query: LeadQueryDto): Promise<Paginated<LeadDto>> {
-    const filter: LeadFilter = {
-      type: query.type,
-      courseId: query.courseId,
-      branchId: query.branchId,
-      couponId: query.couponId,
-      enrollMonth:
-        query.enrollMonth === undefined
-          ? undefined
-          : parseIsoMonth(query.enrollMonth, 'enrollMonth'),
-      converted: query.converted,
-      from: query.from === undefined ? undefined : parseIsoMonth(query.from, 'from'),
-      to: query.to === undefined ? undefined : nextIsoMonth(parseIsoMonth(query.to, 'to')),
-      search: query.search,
-    };
-
     const { rows, total } = await this.repository.findMany({
-      ...filter,
+      ...filterOf(query),
       sort: query.sort,
       order: query.order,
       skip: query.skip,
@@ -195,6 +212,95 @@ export class LeadsService {
     return { id: lead.id, name: fullName(lead) };
   }
 
+  /**
+   * Перевод лидов в студенты (ТЗ 5.7: «Transfer в студенты (bulk/по строке)») —
+   * правый конец жизненного цикла из ТЗ 1.
+   *
+   * Обращение при переводе **не удаляется**: оно хранит ссылку на профиль
+   * (`convertedStudentId`), иначе на вопросы «сколько лидов сентября стали
+   * студентами» и «из какой рекламы пришёл этот студент» (ТЗ 5.2) отвечать
+   * было бы нечем — воронка теряла бы ровно тот конец, ради которого её считают.
+   *
+   * Телефон, уже занятый студентом, отказом не является: профиль не заводится
+   * второй раз, а обращение привязывается к существующему (`linked`). Правило
+   * целиком живёт в чистой функции `planLeadTransfers`.
+   *
+   * Пачка применяется целиком или не применяется вовсе (решение пользователя):
+   * любая непереводимая строка — 422 с отчётом `{ leadId, reason }`, и в БД
+   * при этом не записано ничего. То же, что импорт состава (0013).
+   */
+  async transfer(dto: TransferLeadsDto): Promise<LeadsTransferredDto> {
+    const leads = await this.repository.findManyForTransfer(dto.leadIds);
+    const byId = new Map(leads.map((lead) => [lead.id, lead]));
+
+    // Профили ищутся только по номерам **найденных** обращений: спрашивать БД
+    // о телефонах, которых нет, значило бы делать запрос ради пустого ответа.
+    const students = await this.repository.findStudentsByPhones([
+      ...new Set(leads.map((lead) => lead.phone)),
+    ]);
+
+    const { planned, rejected } = planLeadTransfers(dto.leadIds, leads, students);
+
+    if (rejected.length > 0) {
+      throw new BusinessRuleException('Перевести можно не все обращения', {
+        rejected,
+        total: rejected.length,
+      });
+    }
+
+    const writes: LeadTransferWrite[] = planned.map((plan) => ({
+      leadId: plan.leadId,
+      studentId: plan.studentId,
+      profile: studentProfileOf(byId.get(plan.leadId)!),
+    }));
+
+    const results = await this.repository.transfer(writes, new Date());
+    const actionOf = new Map(planned.map((plan) => [plan.leadId, plan.action]));
+
+    const transferred = results.map(({ leadId, studentId }) => ({
+      leadId,
+      name: fullName(byId.get(leadId)!),
+      studentId,
+      action: actionOf.get(leadId)!,
+    }));
+
+    const created = transferred.filter(({ action }) => action === 'created').length;
+
+    this.logger.log(
+      `Переведено обращений: ${String(transferred.length)} ` +
+        `(заведено профилей ${String(created)}, привязано ${String(transferred.length - created)})`,
+    );
+
+    return { transferred, created, linked: transferred.length - created };
+  }
+
+  /**
+   * Выгрузка лидов в CSV (ТЗ 5.7: «Export»).
+   *
+   * Тем же кодом, что выгрузка состава группы (`src/common/csv`, 0013), а не
+   * вторым: сессия 0013 прямо это записала, и два разбора CSV разошлись бы
+   * в мелочах (разделитель, BOM, экранирование формул) — то есть один из файлов
+   * однажды открылся бы неправильно.
+   *
+   * Выгружается **весь отобранный набор**, а не страница: файл из двадцати
+   * строк не является выгрузкой воронки. Потолок при этом есть (`MAX_EXPORT_ROWS`).
+   */
+  async exportCsv(query: ExportLeadsQueryDto): Promise<LeadsCsvFile> {
+    const rows = await this.repository.findAllForExport(filterOf(query));
+
+    const content = formatCsv([LEADS_CSV_HEADER, ...rows.map(toCsvRow)], { bom: true });
+    const date = formatIsoDate(new Date());
+
+    this.logger.log(`Выгружены лиды: строк ${String(rows.length)}`);
+
+    return {
+      content,
+      fileName: `Лиды ${date}.csv`,
+      asciiFileName: `leads-${date}.csv`,
+      rows: rows.length,
+    };
+  }
+
   private async require(id: string): Promise<LeadRow> {
     const lead = await this.repository.findById(id);
     if (!lead) {
@@ -231,7 +337,30 @@ export class LeadsService {
   }
 }
 
-const fullName = (row: LeadRow): string => `${row.lastName} ${row.firstName}`;
+const fullName = (row: { lastName: string; firstName: string }): string =>
+  `${row.lastName} ${row.firstName}`;
+
+/**
+ * Разбор доменных фильтров воронки — один на список и на выгрузку.
+ *
+ * Месяцы разбираются здесь, а не в репозитории: негодный `2026-13` должен
+ * отвечать 400 **до** запроса в БД, а не превращаться в `Invalid Date`,
+ * который Prisma отдаст пятисоткой (приём 0021, 0025, 0026).
+ */
+const filterOf = (query: LeadFilterQuery): LeadFilter => ({
+  type: query.type,
+  courseId: query.courseId,
+  branchId: query.branchId,
+  couponId: query.couponId,
+  enrollMonth:
+    query.enrollMonth === undefined ? undefined : parseIsoMonth(query.enrollMonth, 'enrollMonth'),
+  converted: query.converted,
+  from: query.from === undefined ? undefined : parseIsoMonth(query.from, 'from'),
+  // Правая граница периода — первое число следующего месяца, и она **не**
+  // включающая: «по июнь» означает весь июнь, а не его первое число.
+  to: query.to === undefined ? undefined : nextIsoMonth(parseIsoMonth(query.to, 'to')),
+  search: query.search,
+});
 
 /** Пустая строка очищает поле, отсутствие поля — оставляет как есть. */
 const optionalDate = (value: string | undefined, field: string): Date | null =>

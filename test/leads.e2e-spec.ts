@@ -26,12 +26,16 @@ import { CouponSortField } from 'src/coupons/dto';
 import { LeadSortField } from 'src/leads/dto';
 import { LeadsModule } from 'src/leads/leads.module';
 import type {
+  LeadFilter,
   LeadListParams,
   LeadRow,
+  LeadTransferResult,
+  LeadTransferWrite,
   LeadUpdateInput,
   LeadWriteInput,
 } from 'src/leads/leads.repository';
 import { LeadsRepository } from 'src/leads/leads.repository';
+import type { ExistingStudentProfile, LeadForTransfer } from 'src/leads/leads-transfer';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
@@ -83,6 +87,22 @@ interface StoredBranch {
   name: string;
 }
 
+/**
+ * Профиль студента в том объёме, в каком его знает перевод лида: телефон
+ * (уникален, на нём держится «привязать, а не завести второй»), ФИО и поля,
+ * которые перевод переносит из обращения.
+ */
+interface StoredStudent {
+  id: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  email: string | null;
+  birthDate: Date | null;
+  gender: Gender | null;
+  branchId: string | null;
+}
+
 const day = (iso: string): Date => new Date(`${iso}T00:00:00.000Z`);
 
 /**
@@ -101,6 +121,25 @@ class InMemoryMarketingStore {
   readonly coupons = new Map<string, CouponRow>();
   readonly couponCourses = new Map<string, string[]>();
   readonly leads = new Map<string, LeadRow>();
+  /** Профили студентов: сюда пишет перевод, отсюда же он узнаёт о занятом телефоне. */
+  readonly students = new Map<string, StoredStudent>();
+
+  addStudent(overrides: Partial<StoredStudent> = {}): StoredStudent {
+    const student: StoredStudent = {
+      id: randomUUID(),
+      firstName: 'Нигина',
+      lastName: 'Каримова',
+      phone: '+992901234567',
+      email: null,
+      birthDate: null,
+      gender: null,
+      branchId: null,
+      ...overrides,
+    };
+    this.students.set(student.id, student);
+
+    return student;
+  }
 
   addCourse(title = 'Frontend'): StoredCourse {
     const course = { id: randomUUID(), title };
@@ -308,27 +347,33 @@ class InMemoryMarketingStore {
 
   // ──────────────────────────────── Лиды ────────────────────────────────
 
-  findManyLeads(params: LeadListParams): Promise<{ rows: LeadRow[]; total: number }> {
-    const search = params.search?.toLowerCase();
+  /**
+   * Отбор строк — один на постраничный список и на выгрузку, как `whereOf`
+   * в репозитории: если бы файл фильтровался своим кодом, тест «выгрузка
+   * показывает то же, что экран» проверял бы совпадение двух реализаций,
+   * а не правило.
+   */
+  private matchLeads(filter: LeadFilter): LeadRow[] {
+    const search = filter.search?.toLowerCase();
 
-    const matched = [...this.leads.values()]
-      .filter((row) => params.type === undefined || row.type === params.type)
-      .filter((row) => params.courseId === undefined || row.course?.id === params.courseId)
-      .filter((row) => params.branchId === undefined || row.branch?.id === params.branchId)
-      .filter((row) => params.couponId === undefined || row.coupon?.id === params.couponId)
+    return [...this.leads.values()]
+      .filter((row) => filter.type === undefined || row.type === filter.type)
+      .filter((row) => filter.courseId === undefined || row.course?.id === filter.courseId)
+      .filter((row) => filter.branchId === undefined || row.branch?.id === filter.branchId)
+      .filter((row) => filter.couponId === undefined || row.coupon?.id === filter.couponId)
       .filter(
         (row) =>
-          params.enrollMonth === undefined ||
-          row.enrollMonth?.getTime() === params.enrollMonth.getTime(),
+          filter.enrollMonth === undefined ||
+          row.enrollMonth?.getTime() === filter.enrollMonth.getTime(),
       )
       .filter(
         (row) =>
-          params.converted === undefined || (row.convertedStudentId !== null) === params.converted,
+          filter.converted === undefined || (row.convertedStudentId !== null) === filter.converted,
       )
       .filter(
-        (row) => params.from === undefined || row.createdAt.getTime() >= params.from.getTime(),
+        (row) => filter.from === undefined || row.createdAt.getTime() >= filter.from.getTime(),
       )
-      .filter((row) => params.to === undefined || row.createdAt.getTime() < params.to.getTime())
+      .filter((row) => filter.to === undefined || row.createdAt.getTime() < filter.to.getTime())
       .filter(
         (row) =>
           search === undefined ||
@@ -338,17 +383,20 @@ class InMemoryMarketingStore {
           (row.email?.toLowerCase().includes(search) ?? false) ||
           (row.source?.toLowerCase().includes(search) ?? false) ||
           (row.utmCampaign?.toLowerCase().includes(search) ?? false),
-      )
-      .sort((a, b) => {
-        const asc =
-          params.sort === LeadSortField.Name
-            ? a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
-            : params.sort === LeadSortField.EnrollMonth
-              ? nullsLast(a.enrollMonth, b.enrollMonth)
-              : a.createdAt.getTime() - b.createdAt.getTime();
+      );
+  }
 
-        return params.order === SortOrder.Asc ? asc : -asc;
-      });
+  findManyLeads(params: LeadListParams): Promise<{ rows: LeadRow[]; total: number }> {
+    const matched = this.matchLeads(params).sort((a, b) => {
+      const asc =
+        params.sort === LeadSortField.Name
+          ? a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
+          : params.sort === LeadSortField.EnrollMonth
+            ? nullsLast(a.enrollMonth, b.enrollMonth)
+            : a.createdAt.getTime() - b.createdAt.getTime();
+
+      return params.order === SortOrder.Asc ? asc : -asc;
+    });
 
     return Promise.resolve({
       rows: matched.slice(params.skip, params.skip + params.take),
@@ -404,6 +452,71 @@ class InMemoryMarketingStore {
     return Promise.resolve();
   }
 
+  // ───────────────────── Выгрузка и перевод (ТЗ 5.7) ─────────────────────
+
+  /** Без окна страницы и с фиксированным порядком — как в репозитории. */
+  findAllForExport(filter: LeadFilter): Promise<LeadRow[]> {
+    return Promise.resolve(
+      this.matchLeads(filter).sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id),
+      ),
+    );
+  }
+
+  findManyForTransfer(ids: string[]): Promise<LeadForTransfer[]> {
+    return Promise.resolve(
+      ids.flatMap((id) => {
+        const lead = this.leads.get(id);
+        if (!lead) return [];
+
+        return [
+          {
+            id: lead.id,
+            firstName: lead.firstName,
+            lastName: lead.lastName,
+            phone: lead.phone,
+            email: lead.email,
+            birthDate: lead.birthDate,
+            gender: lead.gender,
+            branchId: lead.branch?.id ?? null,
+            convertedStudentId: lead.convertedStudentId,
+          },
+        ];
+      }),
+    );
+  }
+
+  findStudentsByPhones(phones: string[]): Promise<ExistingStudentProfile[]> {
+    return Promise.resolve(
+      [...this.students.values()]
+        .filter((student) => phones.includes(student.phone))
+        .map((student) => ({
+          id: student.id,
+          phone: student.phone,
+          lastName: student.lastName,
+          firstName: student.firstName,
+          // «Профиль уже занят другим обращением» выводится из самой ссылки,
+          // а не из отдельного поля: `Lead.convertedStudentId` уникален.
+          leadOriginId:
+            [...this.leads.values()].find((lead) => lead.convertedStudentId === student.id)?.id ??
+            null,
+        })),
+    );
+  }
+
+  transfer(writes: readonly LeadTransferWrite[], now: Date): Promise<LeadTransferResult[]> {
+    return Promise.resolve(
+      writes.map((write) => {
+        const studentId = write.studentId ?? this.addStudent(write.profile).id;
+        const lead = this.leads.get(write.leadId)!;
+
+        this.leads.set(write.leadId, { ...lead, convertedStudentId: studentId, convertedAt: now });
+
+        return { leadId: write.leadId, studentId };
+      }),
+    );
+  }
+
   findCourse(id: string): Promise<StoredCourse | null> {
     return Promise.resolve(this.courses.get(id) ?? null);
   }
@@ -450,6 +563,10 @@ const leadsRepositoryOf = (store: InMemoryMarketingStore) => ({
   create: (input: LeadWriteInput) => store.createLead(input),
   update: (id: string, input: LeadUpdateInput) => store.updateLead(id, input),
   delete: (id: string) => store.deleteLead(id),
+  findAllForExport: (filter: LeadFilter) => store.findAllForExport(filter),
+  findManyForTransfer: (ids: string[]) => store.findManyForTransfer(ids),
+  findStudentsByPhones: (phones: string[]) => store.findStudentsByPhones(phones),
+  transfer: (writes: readonly LeadTransferWrite[], now: Date) => store.transfer(writes, now),
   findCourse: (id: string) => store.findCourse(id),
   findCoupon: (id: string) => store.findCoupon(id),
   findBranch: (id: string) => store.findBranch(id),
@@ -484,10 +601,18 @@ interface LeadBody {
   duplicatePhoneCount?: number;
 }
 
+interface TransferBody {
+  transferred: { leadId: string; name: string; studentId: string; action: string }[];
+  created: number;
+  linked: number;
+}
+
 const LEADS_VIEWS = 'Permission.Leads.Views';
 const LEADS_CREATE = 'Permission.Leads.Create';
 const LEADS_UPDATE = 'Permission.Leads.Update';
 const LEADS_DELETE = 'Permission.Leads.Delete';
+const LEADS_TRANSFER = 'Permission.Leads.Transfer';
+const LEADS_EXPORT = 'Permission.Leads.Export';
 const COUPONS_VIEWS = 'Permission.Coupons.Views';
 const COUPONS_CREATE = 'Permission.Coupons.Create';
 const COUPONS_UPDATE = 'Permission.Coupons.Update';
@@ -497,6 +622,8 @@ const ALL = [
   LEADS_CREATE,
   LEADS_UPDATE,
   LEADS_DELETE,
+  LEADS_TRANSFER,
+  LEADS_EXPORT,
   COUPONS_VIEWS,
   COUPONS_CREATE,
   COUPONS_UPDATE,
@@ -1086,6 +1213,331 @@ describe('Лиды и купоны (e2e, хранилище в памяти)', (
     });
   });
 
+  // ─────────────────── Перевод в студенты (ТЗ 5.7) ───────────────────
+
+  describe('Перевод лидов в студенты', () => {
+    it('заводит профиль студента из полей обращения и не удаляет само обращение', async () => {
+      const token = await tokenWith(ALL);
+      const branch = store.addBranch('Sadbarg');
+      const created = store.addLead({
+        firstName: 'Нигина',
+        lastName: 'Каримова',
+        phone: '+992901234567',
+        email: 'nigina@mail.tj',
+        birthDate: day('2004-05-17'),
+        gender: Gender.FEMALE,
+        branch: { id: branch.id, name: branch.name },
+      });
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id],
+      }).expect(200);
+
+      const body = dataOf<TransferBody>(response);
+      expect(body).toMatchObject({ created: 1, linked: 0 });
+      expect(body.transferred[0]).toMatchObject({
+        leadId: created.id,
+        name: 'Каримова Нигина',
+        action: 'created',
+      });
+
+      // Профиль заведён со всеми полями человека.
+      expect(store.students.get(body.transferred[0].studentId)).toMatchObject({
+        firstName: 'Нигина',
+        lastName: 'Каримова',
+        phone: '+992901234567',
+        email: 'nigina@mail.tj',
+        birthDate: day('2004-05-17'),
+        gender: Gender.FEMALE,
+        branchId: branch.id,
+      });
+
+      // Обращение осталось в воронке и хранит ссылку на профиль (ТЗ 5.2).
+      const card = await get(`/api/v1/leads/${created.id}`, token).expect(200);
+      expect(dataOf<LeadBody>(card).conversion).toMatchObject({
+        converted: true,
+        studentId: body.transferred[0].studentId,
+      });
+    });
+
+    it('телефон, занятый студентом, привязывает к нему — второй профиль не заводится', async () => {
+      // Главное решение куска: обращение всё-таки стало студентом, и отказ
+      // вычеркнул бы его из воронки.
+      const token = await tokenWith(ALL);
+      const student = store.addStudent({ phone: '+992901234567', lastName: 'Каримова' });
+      const created = store.addLead({ phone: '+992901234567' });
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id],
+      }).expect(200);
+
+      expect(dataOf<TransferBody>(response)).toMatchObject({
+        transferred: [{ leadId: created.id, studentId: student.id, action: 'linked' }],
+        created: 0,
+        linked: 1,
+      });
+      expect(store.students.size).toBe(1);
+    });
+
+    it('переводит пачку и считает заведённые отдельно от привязанных', async () => {
+      const token = await tokenWith(ALL);
+      store.addStudent({ phone: '+992901111111' });
+      const first = store.addLead({ phone: '+992901111111' });
+      const second = store.addLead({ phone: '+992902222222' });
+      const third = store.addLead({ phone: '+992903333333' });
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [first.id, second.id, third.id],
+      }).expect(200);
+
+      expect(dataOf<TransferBody>(response)).toMatchObject({ created: 2, linked: 1 });
+      expect(store.students.size).toBe(3);
+    });
+
+    it('«по строке» — тот же маршрут со списком из одного элемента', async () => {
+      const token = await tokenWith(ALL);
+      const created = store.addLead();
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id],
+      }).expect(200);
+
+      expect(dataOf<TransferBody>(response).transferred).toHaveLength(1);
+    });
+
+    it('422 на повторный перевод — профиль второй раз не заводится', async () => {
+      const token = await tokenWith(ALL);
+      const created = store.addLead();
+
+      await post('/api/v1/leads/transfer', token, { leadIds: [created.id] }).expect(200);
+      const second = await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id],
+      }).expect(422);
+
+      expect(second.body).toMatchObject({
+        error: {
+          details: {
+            total: 1,
+            rejected: [{ leadId: created.id, reason: expect.stringContaining('уже переведено') }],
+          },
+        },
+      });
+      expect(store.students.size).toBe(1);
+    });
+
+    it('422 на профиль, заведённый из другого обращения', async () => {
+      const token = await tokenWith(ALL);
+      const first = store.addLead({ phone: '+992901234567' });
+      const second = store.addLead({ phone: '+992901234567' });
+
+      await post('/api/v1/leads/transfer', token, { leadIds: [first.id] }).expect(200);
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [second.id],
+      }).expect(422);
+
+      expect(response.body).toMatchObject({
+        error: {
+          details: {
+            rejected: [
+              { leadId: second.id, reason: expect.stringContaining('из другого обращения') },
+            ],
+          },
+        },
+      });
+      expect(store.students.size).toBe(1);
+    });
+
+    it('422 на два обращения с одним телефоном в одной пачке — не переведён никто', async () => {
+      const token = await tokenWith(ALL);
+      const first = store.addLead({ phone: '+992901234567' });
+      const second = store.addLead({ phone: '+992901234567' });
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [first.id, second.id],
+      }).expect(422);
+
+      expect(response.body).toMatchObject({
+        error: {
+          details: {
+            rejected: [{ leadId: second.id, reason: expect.stringContaining('в этой же пачке') }],
+          },
+        },
+      });
+      // Отказ целиком: первое обращение тоже не переведено.
+      expect(store.students.size).toBe(0);
+      expect(store.leads.get(first.id)?.convertedStudentId).toBeNull();
+    });
+
+    it('422 на несуществующее обращение — годная строка пачки тоже не применяется', async () => {
+      const token = await tokenWith(ALL);
+      const created = store.addLead();
+      const missing = randomUUID();
+
+      const response = await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id, missing],
+      }).expect(422);
+
+      expect(response.body).toMatchObject({
+        error: {
+          details: {
+            rejected: [{ leadId: missing, reason: expect.stringContaining('не найдено') }],
+          },
+        },
+      });
+      expect(store.students.size).toBe(0);
+      expect(store.leads.get(created.id)?.convertedStudentId).toBeNull();
+    });
+
+    it('фильтр `converted` разделяет переведённых и оставшихся в воронке', async () => {
+      const token = await tokenWith(ALL);
+      const transferred = store.addLead({ phone: '+992901111111', lastName: 'Каримова' });
+      store.addLead({ phone: '+992902222222', lastName: 'Рахимова' });
+
+      await post('/api/v1/leads/transfer', token, { leadIds: [transferred.id] }).expect(200);
+
+      const done = await get('/api/v1/leads?converted=true', token).expect(200);
+      const open = await get('/api/v1/leads?converted=false', token).expect(200);
+
+      expect(dataOf<LeadBody[]>(done).map((row) => row.lastName)).toEqual(['Каримова']);
+      expect(dataOf<LeadBody[]>(open).map((row) => row.lastName)).toEqual(['Рахимова']);
+    });
+
+    it('переведённое обращение удаляется — это способ освободить ошибочный профиль', async () => {
+      const token = await tokenWith(ALL);
+      const created = store.addLead();
+
+      await post('/api/v1/leads/transfer', token, { leadIds: [created.id] }).expect(200);
+      await del(`/api/v1/leads/${created.id}`, token).expect(200);
+
+      expect(store.leads.size).toBe(0);
+      // Профиль остаётся: удаляется обращение, а не студент.
+      expect(store.students.size).toBe(1);
+    });
+
+    it('400 на пустой список, повтор в нём, не-UUID и лишнее поле', async () => {
+      const token = await tokenWith(ALL);
+      const created = store.addLead();
+
+      await post('/api/v1/leads/transfer', token, { leadIds: [] }).expect(400);
+      await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id, created.id],
+      }).expect(400);
+      await post('/api/v1/leads/transfer', token, { leadIds: ['не-uuid'] }).expect(400);
+      await post('/api/v1/leads/transfer', token, {
+        leadIds: [created.id],
+        groupId: randomUUID(),
+      }).expect(400);
+
+      expect(store.students.size).toBe(0);
+    });
+
+    it('403: право на правку лида перевод не открывает, и наоборот', async () => {
+      const created = store.addLead();
+
+      await post('/api/v1/leads/transfer', await tokenWith([LEADS_UPDATE]), {
+        leadIds: [created.id],
+      }).expect(403);
+      await put(`/api/v1/leads/${created.id}`, await tokenWith([LEADS_TRANSFER]), {
+        firstName: 'Нигина',
+      }).expect(403);
+    });
+  });
+
+  // ────────────────────── Выгрузка лидов (ТЗ 5.7) ──────────────────────
+
+  describe('Выгрузка лидов в CSV', () => {
+    it('отдаёт файл с BOM и заголовками вместо `{ data }`', async () => {
+      const token = await tokenWith(ALL);
+      const course = store.addCourse('Frontend');
+      store.addLead({
+        lastName: 'Каримова',
+        firstName: 'Нигина',
+        phone: '+992901234567',
+        course: { id: course.id, title: course.title },
+        type: LeadType.CLIENT,
+      });
+
+      const response = await get('/api/v1/leads/export', token).expect(200);
+
+      expect(response.headers['content-type']).toContain('text/csv');
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(response.headers['content-disposition']).toContain('filename*=UTF-8');
+      expect(response.text.startsWith('﻿')).toBe(true);
+
+      const [header, first] = response.text.replace('﻿', '').trimEnd().split('\r\n');
+      expect(header.split(',')[0]).toBe('Телефон');
+      expect(first).toContain('+992901234567');
+      expect(first).toContain('Каримова');
+      // Перечисления — словами, а не кодами enum.
+      expect(first).toContain('Клиент');
+      expect(first).toContain('Frontend');
+    });
+
+    it('выгружает весь отобранный набор, а не страницу', async () => {
+      const token = await tokenWith(ALL);
+      for (let index = 0; index < 25; index += 1) {
+        store.addLead({ phone: `+99290000${String(index).padStart(4, '0')}` });
+      }
+
+      const response = await get('/api/v1/leads/export', token).expect(200);
+
+      // 25 строк данных плюс заголовок — страница по умолчанию вместила бы 20.
+      expect(response.text.replace('﻿', '').trimEnd().split('\r\n')).toHaveLength(26);
+    });
+
+    it('фильтры те же, что у списка: выгрузка и экран показывают один набор', async () => {
+      const token = await tokenWith(ALL);
+      store.addLead({ lastName: 'Каримова', type: LeadType.CLIENT });
+      store.addLead({ lastName: 'Рахимова', type: LeadType.LEAD });
+
+      const file = await get('/api/v1/leads/export?type=CLIENT', token).expect(200);
+      const list = await get('/api/v1/leads?type=CLIENT', token).expect(200);
+
+      expect(file.text).toContain('Каримова');
+      expect(file.text).not.toContain('Рахимова');
+      expect(dataOf<LeadBody[]>(list)).toHaveLength(1);
+    });
+
+    it('поиск по UTM-кампании отбирает строки и в файле', async () => {
+      const token = await tokenWith(ALL);
+      store.addLead({ lastName: 'Каримова', utmCampaign: 'osen-2026' });
+      store.addLead({ lastName: 'Рахимова', utmCampaign: 'zima-2027' });
+
+      const response = await get('/api/v1/leads/export?search=osen', token).expect(200);
+
+      expect(response.text).toContain('Каримова');
+      expect(response.text).not.toContain('Рахимова');
+    });
+
+    it('пустая выборка отдаёт файл из одного заголовка, а не 404', async () => {
+      const token = await tokenWith(ALL);
+
+      const response = await get('/api/v1/leads/export?type=CLIENT', token).expect(200);
+
+      expect(response.text.replace('﻿', '').trimEnd().split('\r\n')).toHaveLength(1);
+    });
+
+    it('400 на негодный месяц в фильтре выгрузки', async () => {
+      const token = await tokenWith(ALL);
+
+      await get('/api/v1/leads/export?from=2026-13', token).expect(400);
+    });
+
+    it('403: право на просмотр выгрузку не открывает — это вынос персональных данных', async () => {
+      await get('/api/v1/leads/export', await tokenWith([LEADS_VIEWS])).expect(403);
+      await get('/api/v1/leads/export', await tokenWith([LEADS_EXPORT])).expect(200);
+    });
+
+    it('`export` не путается с карточкой лида', async () => {
+      // Маршрут объявлен до `:id`; иначе `ParseUUIDPipe` ответил бы 400.
+      const token = await tokenWith(ALL);
+
+      await get('/api/v1/leads/export', token).expect(200);
+      await get(`/api/v1/leads/${randomUUID()}`, token).expect(404);
+    });
+  });
+
   // ───────────────────────────── OpenAPI ─────────────────────────────
 
   describe('OpenAPI', () => {
@@ -1096,6 +1548,8 @@ describe('Лиды и купоны (e2e, хранилище в памяти)', (
         expect.arrayContaining([
           '/api/v1/leads',
           '/api/v1/leads/{id}',
+          '/api/v1/leads/transfer',
+          '/api/v1/leads/export',
           '/api/v1/coupons',
           '/api/v1/coupons/{id}',
         ]),
@@ -1109,6 +1563,23 @@ describe('Лиды и купоны (e2e, хранилище в памяти)', (
       expect(paths['/api/v1/leads']?.post?.responses['200']).toBeUndefined();
       expect(paths['/api/v1/coupons']?.post?.responses['201']).toBeDefined();
       expect(paths['/api/v1/coupons']?.post?.responses['200']).toBeUndefined();
+    });
+
+    it('перевод отвечает 200 и не 201: по этому адресу ресурс не создаётся', () => {
+      // Заведённые профили лежат по `/students/{id}`, а здесь возвращается
+      // результат применения — та же причина, что у импорта состава (0013).
+      const paths = buildOpenApiDocument(app).paths;
+
+      expect(paths['/api/v1/leads/transfer']?.post?.responses['200']).toBeDefined();
+      expect(paths['/api/v1/leads/transfer']?.post?.responses['201']).toBeUndefined();
+    });
+
+    it('выгрузка описана как `text/csv`, а не как `{ data }`', () => {
+      const paths = buildOpenApiDocument(app).paths;
+
+      expect(paths['/api/v1/leads/export']?.get?.responses['200']).toMatchObject({
+        content: { 'text/csv': expect.anything() },
+      });
     });
   });
 });

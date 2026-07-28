@@ -1,20 +1,44 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Gender, LeadType } from '@prisma/client';
 
-import { BusinessRuleException, SortOrder } from '../common';
+import { CSV_BOM, BusinessRuleException, SortOrder } from '../common';
 import type { AppConfigService } from '../config';
 import { PhoneService } from '../phone';
 import { LeadQueryDto, LeadSortField } from './dto';
-import type { LeadRow, LeadsRepository } from './leads.repository';
+import type { LeadRow, LeadsRepository, LeadTransferWrite } from './leads.repository';
 import { LeadsService } from './leads.service';
+import type { ExistingStudentProfile, LeadForTransfer } from './leads-transfer';
 
 const LEAD_ID = '11111111-1111-1111-1111-111111111111';
 const COURSE_ID = '22222222-2222-2222-2222-222222222222';
 const COUPON_ID = '33333333-3333-3333-3333-333333333333';
 const BRANCH_ID = '44444444-4444-4444-4444-444444444444';
 const STUDENT_ID = '55555555-5555-5555-5555-555555555555';
+const OTHER_LEAD_ID = '66666666-6666-6666-6666-666666666666';
 
 const day = (iso: string): Date => new Date(`${iso}T00:00:00.000Z`);
+
+const transferable = (overrides: Partial<LeadForTransfer> = {}): LeadForTransfer => ({
+  id: LEAD_ID,
+  firstName: 'Нигина',
+  lastName: 'Каримова',
+  phone: '+992901234567',
+  email: null,
+  birthDate: null,
+  gender: null,
+  branchId: null,
+  convertedStudentId: null,
+  ...overrides,
+});
+
+const existing = (overrides: Partial<ExistingStudentProfile> = {}): ExistingStudentProfile => ({
+  id: STUDENT_ID,
+  phone: '+992901234567',
+  lastName: 'Каримова',
+  firstName: 'Нигина',
+  leadOriginId: null,
+  ...overrides,
+});
 
 const row = (overrides: Partial<LeadRow> = {}): LeadRow => ({
   id: LEAD_ID,
@@ -59,6 +83,10 @@ describe('LeadsService (ТЗ 5.7)', () => {
       | 'create'
       | 'update'
       | 'delete'
+      | 'findAllForExport'
+      | 'findManyForTransfer'
+      | 'findStudentsByPhones'
+      | 'transfer'
       | 'findCourse'
       | 'findCoupon'
       | 'findBranch'
@@ -74,6 +102,16 @@ describe('LeadsService (ТЗ 5.7)', () => {
       create: jest.fn().mockImplementation(() => Promise.resolve(row())),
       update: jest.fn().mockImplementation(() => Promise.resolve(row())),
       delete: jest.fn().mockResolvedValue(undefined),
+      findAllForExport: jest.fn().mockResolvedValue([row()]),
+      findManyForTransfer: jest.fn().mockResolvedValue([transferable()]),
+      findStudentsByPhones: jest.fn().mockResolvedValue([]),
+      transfer: jest
+        .fn()
+        .mockImplementation((writes: LeadTransferWrite[]) =>
+          Promise.resolve(
+            writes.map(({ leadId, studentId }) => ({ leadId, studentId: studentId ?? STUDENT_ID })),
+          ),
+        ),
       findCourse: jest.fn().mockResolvedValue({ id: COURSE_ID, title: 'Frontend' }),
       findCoupon: jest.fn().mockResolvedValue({ id: COUPON_ID, name: 'OSEN-2026' }),
       findBranch: jest.fn().mockResolvedValue({ id: BRANCH_ID, name: 'Sadbarg' }),
@@ -470,6 +508,211 @@ describe('LeadsService (ТЗ 5.7)', () => {
 
       await expect(service.remove(LEAD_ID)).rejects.toBeInstanceOf(NotFoundException);
       expect(repository.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Перевод в студенты (ТЗ 5.7)', () => {
+    it('заводит профиль и называет действие `created`', async () => {
+      await expect(service.transfer({ leadIds: [LEAD_ID] })).resolves.toEqual({
+        transferred: [
+          { leadId: LEAD_ID, name: 'Каримова Нигина', studentId: STUDENT_ID, action: 'created' },
+        ],
+        created: 1,
+        linked: 0,
+      });
+    });
+
+    it('в новый профиль уходят поля человека, а не поля обращения', async () => {
+      repository.findManyForTransfer.mockResolvedValue([
+        transferable({
+          email: 'nigina@mail.tj',
+          birthDate: day('2004-05-17'),
+          gender: Gender.FEMALE,
+          branchId: BRANCH_ID,
+        }),
+      ]);
+
+      await service.transfer({ leadIds: [LEAD_ID] });
+
+      expect(repository.transfer).toHaveBeenCalledWith(
+        [
+          {
+            leadId: LEAD_ID,
+            studentId: null,
+            profile: {
+              firstName: 'Нигина',
+              lastName: 'Каримова',
+              phone: '+992901234567',
+              email: 'nigina@mail.tj',
+              birthDate: day('2004-05-17'),
+              gender: Gender.FEMALE,
+              branchId: BRANCH_ID,
+            },
+          },
+        ],
+        expect.any(Date),
+      );
+    });
+
+    it('занятый телефон привязывает к существующему профилю (`linked`), а не отказывает', async () => {
+      repository.findStudentsByPhones.mockResolvedValue([existing()]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID] })).resolves.toMatchObject({
+        transferred: [{ leadId: LEAD_ID, studentId: STUDENT_ID, action: 'linked' }],
+        created: 0,
+        linked: 1,
+      });
+      // Второй профиль не заводится: `Student.phone` уникален с Фазы 1.
+      expect(repository.transfer).toHaveBeenCalledWith(
+        [expect.objectContaining({ studentId: STUDENT_ID })],
+        expect.any(Date),
+      );
+    });
+
+    it('считает заведённые и привязанные раздельно', async () => {
+      repository.findManyForTransfer.mockResolvedValue([
+        transferable({ id: LEAD_ID }),
+        transferable({ id: OTHER_LEAD_ID, phone: '+992905550000' }),
+      ]);
+      repository.findStudentsByPhones.mockResolvedValue([existing()]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID, OTHER_LEAD_ID] })).resolves.toMatchObject({
+        created: 1,
+        linked: 1,
+      });
+    });
+
+    it('профили ищутся по телефонам найденных обращений, без повторов', async () => {
+      repository.findManyForTransfer.mockResolvedValue([
+        transferable({ id: LEAD_ID }),
+        transferable({ id: OTHER_LEAD_ID }),
+      ]);
+
+      await service.transfer({ leadIds: [LEAD_ID, OTHER_LEAD_ID] }).catch(() => undefined);
+
+      expect(repository.findStudentsByPhones).toHaveBeenCalledWith(['+992901234567']);
+    });
+
+    it('422 на уже переведённое обращение — не переведён никто', async () => {
+      repository.findManyForTransfer.mockResolvedValue([
+        transferable({ convertedStudentId: STUDENT_ID }),
+      ]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID] })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.transfer).not.toHaveBeenCalled();
+    });
+
+    it('422 на несуществующее обращение', async () => {
+      repository.findManyForTransfer.mockResolvedValue([]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID] })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.transfer).not.toHaveBeenCalled();
+    });
+
+    it('422 на профиль, заведённый из другого обращения', async () => {
+      repository.findStudentsByPhones.mockResolvedValue([
+        existing({ leadOriginId: OTHER_LEAD_ID }),
+      ]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID] })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.transfer).not.toHaveBeenCalled();
+    });
+
+    it('отказ несёт отчёт по строкам и их общее число', async () => {
+      repository.findManyForTransfer.mockResolvedValue([
+        transferable({ convertedStudentId: STUDENT_ID }),
+      ]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID, OTHER_LEAD_ID] })).rejects.toMatchObject({
+        response: {
+          details: {
+            total: 2,
+            rejected: [
+              { leadId: LEAD_ID, reason: expect.stringContaining('уже переведено') },
+              { leadId: OTHER_LEAD_ID, reason: expect.stringContaining('не найдено') },
+            ],
+          },
+        },
+      });
+    });
+
+    it('одна годная строка не спасает пачку: применяется всё или ничего', async () => {
+      repository.findManyForTransfer.mockResolvedValue([transferable({ id: LEAD_ID })]);
+
+      await expect(service.transfer({ leadIds: [LEAD_ID, OTHER_LEAD_ID] })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.transfer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Выгрузка в CSV (ТЗ 5.7)', () => {
+    it('файл начинается с BOM — иначе Excel читает UTF-8 как cp1251', async () => {
+      const file = await service.exportCsv({});
+
+      expect(file.content.startsWith(CSV_BOM)).toBe(true);
+    });
+
+    it('заголовок и строка на каждое обращение', async () => {
+      repository.findAllForExport.mockResolvedValue([row(), row({ id: OTHER_LEAD_ID })]);
+
+      const file = await service.exportCsv({});
+
+      expect(file.content.trimEnd().split('\r\n')).toHaveLength(3);
+      expect(file.rows).toBe(2);
+    });
+
+    it('пустая выборка отдаёт файл из одного заголовка, а не пустой', async () => {
+      repository.findAllForExport.mockResolvedValue([]);
+
+      const file = await service.exportCsv({});
+
+      expect(file.content.trimEnd().split('\r\n')).toHaveLength(1);
+      expect(file.rows).toBe(0);
+    });
+
+    it('передаёт доменные фильтры без окна страницы', async () => {
+      await service.exportCsv({
+        type: LeadType.CLIENT,
+        courseId: COURSE_ID,
+        enrollMonth: '2026-09',
+        from: '2026-01',
+        to: '2026-06',
+        search: 'instagram',
+      });
+
+      expect(repository.findAllForExport).toHaveBeenCalledWith({
+        type: LeadType.CLIENT,
+        courseId: COURSE_ID,
+        branchId: undefined,
+        couponId: undefined,
+        enrollMonth: day('2026-09-01'),
+        converted: undefined,
+        from: day('2026-01-01'),
+        // Правая граница не включающая: «по июнь» — это весь июнь.
+        to: day('2026-07-01'),
+        search: 'instagram',
+      });
+    });
+
+    it('400 на негодный месяц — до запроса в БД', async () => {
+      await expect(service.exportCsv({ from: '2026-13' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(repository.findAllForExport).not.toHaveBeenCalled();
+    });
+
+    it('имя файла с датой, ASCII-запасное — без кириллицы', async () => {
+      const file = await service.exportCsv({});
+
+      expect(file.fileName).toMatch(/^Лиды \d{4}-\d{2}-\d{2}\.csv$/);
+      expect(file.asciiFileName).toMatch(/^leads-\d{4}-\d{2}-\d{2}\.csv$/);
     });
   });
 });

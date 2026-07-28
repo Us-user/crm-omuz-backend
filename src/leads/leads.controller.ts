@@ -10,33 +10,42 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiProduces,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { AccountType } from '@prisma/client';
+import type { Response } from 'express';
 
 import { AccountTypeGuard, RequireAccountType } from '../auth';
 import type { Paginated } from '../common';
-import { ApiDataResponse, ApiPaginatedResponse, ApiStandardErrors } from '../common';
+import { ApiDataResponse, ApiPaginatedResponse, ApiStandardErrors, RawResponse } from '../common';
 // Прямой путь, а не barrel `../rbac`: тот реэкспортирует ещё и сервисы
 // с репозиториями, а контроллеру нужен только декоратор.
 import { RequirePermission } from '../rbac/decorators/require-permission.decorator';
 import {
   CreatedLeadDto,
   CreateLeadDto,
+  ExportLeadsQueryDto,
   LeadDeletedDto,
   LeadDto,
   LeadQueryDto,
+  LeadsTransferredDto,
+  TransferLeadsDto,
   UpdateLeadDto,
 } from './dto';
 import { LeadsService } from './leads.service';
 
 /**
- * Лиды и клиенты (ТЗ 5.7) — левый конец жизненного цикла из ТЗ 1.
- *
- * Перевод в студенты (`POST /leads/transfer`) и выгрузка (`GET /leads/export`)
- * идут отдельным куском: первый заводит профиль студента, вторая переиспользует
- * CSV-код выгрузки состава группы (0013).
+ * Лиды и клиенты (ТЗ 5.7) — жизненный цикл из ТЗ 1 целиком: «Лид (реклама) →
+ * Client (после пробного дня) → Студент».
  */
 @ApiTags('Leads')
 @ApiBearerAuth('access-token')
@@ -63,6 +72,46 @@ export class LeadsController {
   @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
   findAll(@Query() query: LeadQueryDto): Promise<Paginated<LeadDto>> {
     return this.leads.findAll(query);
+  }
+
+  // Объявлен **до** `:id`: Nest сопоставляет маршруты в порядке объявления,
+  // и ниже `export` уехал бы в параметр (`ParseUUIDPipe` ответил бы 400
+  // на существующий эндпоинт).
+  @Get('export')
+  @RawResponse()
+  @RequirePermission('Permission.Leads.Export')
+  @ApiOperation({
+    summary: 'Выгрузка лидов в CSV',
+    description:
+      'ТЗ 5.7: «Export». Отдаётся файл, а не `{ data }`: `text/csv` с BOM — Excel под ' +
+      'Windows иначе читает UTF-8 как cp1251. Выгружается весь отобранный набор целиком ' +
+      '(не страница), свежими обращениями сверху; фильтры те же, что у списка. ' +
+      'Выгрузка контактов — вынос персональных данных за пределы системы, поэтому ' +
+      'у неё своё право, а не `Views`.',
+  })
+  @ApiProduces('text/csv')
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'CSV с лидами',
+    content: { 'text/csv': { schema: { type: 'string' } } },
+  })
+  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  async exportCsv(
+    @Query() query: ExportLeadsQueryDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<string> {
+    const file = await this.leads.exportCsv(query);
+
+    response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    // Два имени по RFC 6266: ASCII — для клиентов, не понимающих `filename*`,
+    // кириллическое — для всех остальных (тот же приём, что в 0013).
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${file.asciiFileName}"; ` +
+        `filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    );
+
+    return file.content;
   }
 
   @Get(':id')
@@ -100,6 +149,33 @@ export class LeadsController {
   )
   create(@Body() dto: CreateLeadDto): Promise<CreatedLeadDto> {
     return this.leads.create(dto);
+  }
+
+  @Post('transfer')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Permission.Leads.Transfer')
+  @ApiOperation({
+    summary: 'Перевод лидов в студенты',
+    description:
+      'ТЗ 5.7: «Transfer в студенты (bulk/по строке)» — режим «по строке» это список ' +
+      'из одного элемента. Обращение при переводе **не удаляется**: оно хранит ссылку ' +
+      'на заведённый профиль, иначе воронка потеряла бы тот конец, ради которого её ' +
+      'считают (ТЗ 5.2). Если студент с таким телефоном уже есть, второй профиль ' +
+      '**не заводится** — обращение привязывается к существующему (`action: "linked"`). ' +
+      'Пачка применяется целиком: любая непереводимая строка — 422 с отчётом ' +
+      '`{ leadId, reason }`, и не переведён при этом никто. В группу студент ' +
+      'не зачисляется: это отдельное действие состава (`POST /groups/{id}/students`) ' +
+      'со своими правилами.',
+  })
+  @ApiDataResponse(LeadsTransferredDto, { description: 'Обращения переведены' })
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+  )
+  transfer(@Body() dto: TransferLeadsDto): Promise<LeadsTransferredDto> {
+    return this.leads.transfer(dto);
   }
 
   @Put(':id')
