@@ -6,6 +6,7 @@ import { AvansModule } from './avans/avans.module';
 import { BranchesModule } from './branches/branches.module';
 import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
+import { CouponsModule } from './coupons/coupons.module';
 import { CoursesModule } from './courses/courses.module';
 import { EmployeesModule } from './employees/employees.module';
 import { GroupJournalModule } from './group-journal/group-journal.module';
@@ -16,6 +17,7 @@ import { GraduatesModule } from './graduates/graduates.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
 import { LeadersModule } from './leaders/leaders.module';
+import { LeadsModule } from './leads/leads.module';
 import { LeftCoursesModule } from './left-courses/left-courses.module';
 import { LoggerModule } from './logger/logger.module';
 import { MailerModule } from './mailer/mailer.module';
@@ -57,6 +59,8 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     StudentParentsModule,
     PerformanceModule,
     LeadersModule,
+    LeadsModule,
+    CouponsModule,
     LeftCoursesModule,
     GraduatesModule,
     EmployeesModule,

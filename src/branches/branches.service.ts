@@ -128,6 +128,7 @@ export class BranchesService {
       { count: branch._count.groups, label: 'группы' },
       { count: branch._count.students, label: 'студенты' },
       { count: branch._count.employees, label: 'сотрудники' },
+      { count: branch._count.leads, label: 'лиды' },
     ].filter((item) => item.count > 0);
 
     if (attached.length === 0) return;

@@ -106,7 +106,7 @@ class InMemoryCatalogStore {
       description: null,
       status: DirectoryStatus.ACTIVE,
       createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      _count: { rooms: 0, groups: 0, students: 0, employees: 0 },
+      _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 0 },
       ...overrides,
     };
     this.branches.set(branch.id, branch);
@@ -153,7 +153,7 @@ class InMemoryCatalogStore {
       durationUnit: DurationUnit.MONTH,
       status: DirectoryStatus.ACTIVE,
       createdAt: new Date('2026-07-22T00:00:00.000Z'),
-      _count: { groups: 0 },
+      _count: { groups: 0, leads: 0, coupons: 0 },
       ...overrides,
     };
     this.courses.set(course.id, course);
@@ -526,6 +526,9 @@ class InMemoryCatalogStore {
       groups: [...this.groups.values()].filter((group) => group.branch.id === branch.id).length,
       students: people.students,
       employees: people.employees,
+      // Лиды в этом наборе не заводятся: у филиала их всегда ноль
+      // (маркетинговый контур проверяет `leads.e2e-spec.ts`).
+      leads: 0,
     };
 
     return branch;
@@ -535,6 +538,9 @@ class InMemoryCatalogStore {
   private withGroupCount(course: CourseRow): CourseRow {
     course._count = {
       groups: [...this.groups.values()].filter((group) => group.course.id === course.id).length,
+      // Лиды и купоны этот набор не заводит — их проверяет `leads.e2e-spec.ts`.
+      leads: 0,
+      coupons: 0,
     };
 
     return course;

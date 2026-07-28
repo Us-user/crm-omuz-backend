@@ -229,6 +229,9 @@ class InMemoryStudentsStore {
       lastName: student.lastName,
       accountId: student.account?.id ?? null,
       promotedEmployee: this.promoted.has(id) ? { id: randomUUID() } : null,
+      // Лидов этот набор не заводит: перевод лида в студенты проверяет
+      // `leads.e2e-spec.ts`.
+      leadOrigin: null,
       _count: {
         groups: student._count.groups,
         journalEntries: 0,

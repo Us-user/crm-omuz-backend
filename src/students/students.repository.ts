@@ -141,6 +141,7 @@ export type StudentDeletionCheck = Prisma.StudentGetPayload<{
     lastName: true;
     accountId: true;
     promotedEmployee: { select: { id: true } };
+    leadOrigin: { select: { id: true } };
     _count: {
       select: {
         groups: true;
@@ -334,6 +335,9 @@ export class StudentsRepository {
         lastName: true,
         accountId: true,
         promotedEmployee: { select: { id: true } },
+        // Лид, из которого завёлся профиль (ТЗ 5.7). Связь 1:1, поэтому
+        // `_count` к ней неприменим — берётся сама ссылка.
+        leadOrigin: { select: { id: true } },
         _count: {
           select: {
             groups: true,

@@ -17,7 +17,7 @@ const BRANCH_SELECT = {
   createdAt: true,
   // Счётчики, а не сами строки: у филиала могут быть сотни студентов, и возить
   // их ради числа на карточке значило бы тянуть таблицу на каждую страницу списка.
-  _count: { select: { rooms: true, students: true, employees: true, groups: true } },
+  _count: { select: { rooms: true, students: true, employees: true, groups: true, leads: true } },
 } satisfies Prisma.BranchSelect;
 
 export type BranchRow = Prisma.BranchGetPayload<{ select: typeof BRANCH_SELECT }>;

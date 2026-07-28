@@ -22,7 +22,9 @@ const COURSE_SELECT = {
   // «Кол-во групп» с карточки курса (ТЗ 5.6). Счётчик, а не сами группы:
   // на экране каталога нужно только число, а групп у курса за годы много.
   // На нём же держится запрет удалять курс, по которому кто-то учится.
-  _count: { select: { groups: true } },
+  // Счётчики, а не строки: у курса могут быть сотни лидов, и возить их ради
+  // числа в отказе значило бы тянуть таблицу на каждую страницу списка.
+  _count: { select: { groups: true, leads: true, coupons: true } },
 } satisfies Prisma.CourseSelect;
 
 export type CourseRow = Prisma.CourseGetPayload<{ select: typeof COURSE_SELECT }>;

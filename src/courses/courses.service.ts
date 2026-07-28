@@ -93,18 +93,18 @@ export class CoursesService {
   }
 
   /**
-   * Удаление курса. Курс, по которому набраны группы, не удаляется: внешний
-   * ключ стоит `RESTRICT` и БД такое удаление и так не пропустит, но проверка
+   * Удаление курса. Курс, на который что-то ссылается, не удаляется: внешние
+   * ключи стоят `RESTRICT` и БД такое удаление и так не пропустит, но проверка
    * здесь нужна, чтобы наружу ушла причина, а не обезличенная ошибка связи.
+   *
+   * Причин три, и они перечисляются списком, как у филиала (0007): группы
+   * (0008), лиды и купоны (0027). Молчаливое исчезновение курса из купона было
+   * бы опаснее прочего: пустой набор курсов означает «на все курсы», то есть
+   * скидка бы **расширилась**.
    */
   async remove(id: string): Promise<CourseDeletedDto> {
     const course = await this.require(id);
-
-    if (course._count.groups > 0) {
-      throw new ConflictException(
-        `По курсу учатся группы (${String(course._count.groups)}) — удалите или переведите их перед удалением курса`,
-      );
-    }
+    this.assertNotReferenced(course);
 
     await this.repository.delete(id);
     this.logger.log(`Удалён курс ${course.title} (${id})`);
@@ -126,6 +126,20 @@ export class CoursesService {
     if (twin && twin.id !== exceptId) {
       throw new ConflictException(`Курс с названием «${twin.title}» уже существует`);
     }
+  }
+
+  /** Пустые категории в сообщение не попадают — как у филиала (0007). */
+  private assertNotReferenced(course: CourseRow): void {
+    const attached = [
+      { count: course._count.groups, label: 'группы' },
+      { count: course._count.leads, label: 'лиды' },
+      { count: course._count.coupons, label: 'купоны' },
+    ].filter((item) => item.count > 0);
+
+    if (attached.length === 0) return;
+
+    const listed = attached.map(({ count, label }) => `${label} (${String(count)})`).join(', ');
+    throw new ConflictException(`На курс ссылаются ${listed} — отвяжите их перед удалением курса`);
   }
 }
 

@@ -64,6 +64,7 @@ const deletable = (overrides: Partial<StudentDeletionCheck> = {}): StudentDeleti
   lastName: 'Каримова',
   accountId: null,
   promotedEmployee: null,
+  leadOrigin: null,
   _count: { groups: 0, journalEntries: 0, coinTransactions: 0, monthlyWins: 0, graduations: 0 },
   ...overrides,
 });
@@ -549,6 +550,17 @@ describe('StudentsService', () => {
       );
 
       await expect(service.remove(STUDENT_ID)).rejects.toThrow(/победы в рейтинге месяца \(2\)/);
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    // Лид, переведённый в этот профиль (ТЗ 5.7): удаление молча превратило бы
+    // переведённое обращение в непереведённое, то есть переписало бы воронку.
+    it('409 на профиль, заведённый переводом лида — с подсказкой удалить сам лид', async () => {
+      repository.findForDeletion.mockResolvedValue(
+        deletable({ leadOrigin: { id: '99999999-9999-9999-9999-999999999999' } }),
+      );
+
+      await expect(service.remove(STUDENT_ID)).rejects.toThrow(/удалите сам лид/);
       expect(repository.delete).not.toHaveBeenCalled();
     });
 

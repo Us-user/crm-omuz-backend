@@ -22,7 +22,7 @@ const row = (overrides: Partial<CourseRow> = {}): CourseRow => ({
   durationUnit: DurationUnit.MONTH,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-07-27T10:00:00.000Z'),
-  _count: { groups: 0 },
+  _count: { groups: 0, leads: 0, coupons: 0 },
   ...overrides,
 });
 
@@ -222,7 +222,7 @@ describe('CoursesService', () => {
     });
 
     it('409 на удаление курса, по которому учатся группы (ТЗ 5.5)', async () => {
-      repository.findById.mockResolvedValue(row({ _count: { groups: 3 } }));
+      repository.findById.mockResolvedValue(row({ _count: { groups: 3, leads: 0, coupons: 0 } }));
 
       const error = await service.remove(COURSE_ID).catch((e: unknown) => e);
 
@@ -237,11 +237,41 @@ describe('CoursesService', () => {
       await expect(service.remove(COURSE_ID)).rejects.toBeInstanceOf(NotFoundException);
       expect(repository.delete).not.toHaveBeenCalled();
     });
+
+    it('409, если на курс ссылаются лиды (ТЗ 5.7)', async () => {
+      repository.findById.mockResolvedValue(row({ _count: { groups: 0, leads: 7, coupons: 0 } }));
+
+      const error = await service.remove(COURSE_ID).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toContain('лиды (7)');
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('409, если курс входит в купон: иначе скидка молча расширилась бы на все курсы', async () => {
+      repository.findById.mockResolvedValue(row({ _count: { groups: 0, leads: 0, coupons: 2 } }));
+
+      const error = await service.remove(COURSE_ID).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toContain('купоны (2)');
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
+
+    it('перечисляет все причины сразу и не пишет про пустые', async () => {
+      repository.findById.mockResolvedValue(row({ _count: { groups: 1, leads: 3, coupons: 0 } }));
+
+      const error = await service.remove(COURSE_ID).catch((e: unknown) => e);
+
+      expect((error as ConflictException).message).toContain('группы (1)');
+      expect((error as ConflictException).message).toContain('лиды (3)');
+      expect((error as ConflictException).message).not.toContain('купоны');
+    });
   });
 
   describe('Счётчик групп (ТЗ 5.6)', () => {
     it('отдаёт «кол-во групп» в карточке курса', async () => {
-      repository.findById.mockResolvedValue(row({ _count: { groups: 5 } }));
+      repository.findById.mockResolvedValue(row({ _count: { groups: 5, leads: 0, coupons: 0 } }));
 
       await expect(service.findOne(COURSE_ID)).resolves.toMatchObject({ groupsCount: 5 });
     });
