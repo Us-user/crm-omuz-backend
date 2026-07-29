@@ -63,3 +63,25 @@ export const shiftIsoMonth = (month: Date, delta: number): Date =>
  * значило бы выводить это число самому — 28, 29, 30 или 31.
  */
 export const nextIsoMonth = (month: Date): Date => shiftIsoMonth(month, 1);
+
+/**
+ * Все месяцы отрезка `[from, to]` включительно, в хронологическом порядке.
+ *
+ * Месяцы без единой записи остаются в ряду с нулём — это и есть смысл функции.
+ * График, в котором пустой месяц просто отсутствует, читается как «данных нет»,
+ * хотя данные есть и они равны нулю; а расстояние между столбцами перестаёт
+ * быть временем.
+ *
+ * Жила в `left-courses.ts` (0025), переехала сюда в сессии 0030: помесячный
+ * ряд понадобился второму отчёту («Income vs Expense» обзора, ТЗ 5.16), а копия
+ * оси времени в каждом домене — ровно та ошибка, от которой ось и защищает.
+ */
+export function monthSequence(from: Date, to: Date): string[] {
+  const months: string[] = [];
+
+  for (let month = from; month.getTime() <= to.getTime(); month = shiftIsoMonth(month, 1)) {
+    months.push(formatIsoMonth(month));
+  }
+
+  return months;
+}

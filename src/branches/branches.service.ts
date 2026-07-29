@@ -129,6 +129,9 @@ export class BranchesService {
       { count: branch._count.students, label: 'студенты' },
       { count: branch._count.employees, label: 'сотрудники' },
       { count: branch._count.leads, label: 'лиды' },
+      // Расход (0030) — не «люди», но довод тот же: из отчёта о деньгах молча
+      // пропало бы, куда они уходили.
+      { count: branch._count.expenses, label: 'расходы' },
     ].filter((item) => item.count > 0);
 
     if (attached.length === 0) return;

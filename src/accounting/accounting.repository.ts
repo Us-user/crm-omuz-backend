@@ -6,7 +6,13 @@ import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { DebtorChargeTotals, DebtorDebt } from './accounting';
 import { ChargeStatus, dueCentsOf, toCents } from './accounting';
-import { ChargeSortField, PaymentTypeSortField, TransactionSortField } from './dto';
+import {
+  ChargeSortField,
+  ExpenseSortField,
+  PaymentTypeSortField,
+  TransactionSortField,
+} from './dto';
+import type { CategoryNode, ExpenseFact, GroupChargeFact, GroupRef, MoneyFact } from './overview';
 
 // ───────────────────────────── Выборки строк ─────────────────────────────────
 
@@ -70,6 +76,34 @@ const TRANSACTION_SELECT = {
 export type TransactionRow = Prisma.PaymentTransactionGetPayload<{
   select: typeof TRANSACTION_SELECT;
 }>;
+
+const EXPENSE_CATEGORY_SELECT = {
+  id: true,
+  name: true,
+  description: true,
+  status: true,
+  createdAt: true,
+  parent: { select: { id: true, name: true } },
+  _count: { select: { children: true, expenses: true } },
+} satisfies Prisma.ExpenseCategorySelect;
+
+export type ExpenseCategoryRow = Prisma.ExpenseCategoryGetPayload<{
+  select: typeof EXPENSE_CATEGORY_SELECT;
+}>;
+
+const EXPENSE_SELECT = {
+  id: true,
+  title: true,
+  amount: true,
+  spentAt: true,
+  note: true,
+  createdAt: true,
+  category: { select: { id: true, name: true, parent: { select: { id: true, name: true } } } },
+  branch: { select: { id: true, name: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.ExpenseSelect;
+
+export type ExpenseRow = Prisma.ExpenseGetPayload<{ select: typeof EXPENSE_SELECT }>;
 
 /** Карточка начисления: та же строка плюс платежи, которые её закрывают. */
 export interface ChargeCard {
@@ -140,6 +174,61 @@ export interface TransactionListParams extends TransactionFilter {
   order: SortOrder;
   skip: number;
   take: number;
+}
+
+/**
+ * Отбор расходов — общий для списка, для его итогов и для свода обзора
+ * (тот же приём, что у `ChargeFilter`: три числа на соседних экранах обязаны
+ * считаться по одному набору строк по определению, а не по совпадению).
+ *
+ * `categoryIds` — уже развёрнутый набор: категория верхнего уровня отбирает
+ * и свои подкатегории, но разворачивает их сервис, а не запрос.
+ */
+export interface ExpenseFilter {
+  categoryIds?: string[];
+  branchId?: string;
+  from?: Date;
+  to?: Date;
+  search?: string;
+}
+
+export interface ExpenseListParams extends ExpenseFilter {
+  sort: ExpenseSortField;
+  order: SortOrder;
+  skip: number;
+  take: number;
+}
+
+export interface ExpenseCategoryListParams {
+  status?: DirectoryStatus;
+  search?: string;
+}
+
+export interface ExpenseCategoryWriteInput {
+  name?: string;
+  description?: string | null;
+  parentId?: string | null;
+  status?: DirectoryStatus;
+}
+
+export interface ExpenseInput {
+  categoryId: string;
+  title: string;
+  amountCents: number;
+  spentAt: Date;
+  branchId: string | null;
+  note: string | null;
+  createdById: string | null;
+}
+
+/** `undefined` — колонку не менять; значение (включая `null`) — записать. */
+export interface ExpenseUpdateInput {
+  categoryId?: string;
+  title?: string;
+  amountCents?: number;
+  spentAt?: Date;
+  branchId?: string | null;
+  note?: string | null;
 }
 
 export interface PaymentTypeListParams {
@@ -268,6 +357,28 @@ const transactionWhereOf = (filter: TransactionFilter): Prisma.PaymentTransactio
             { student: { lastName: { contains: filter.search, mode: 'insensitive' } } },
             { student: { phone: { contains: filter.search } } },
             { comment: { contains: filter.search, mode: 'insensitive' } },
+          ],
+        }),
+  };
+};
+
+const expenseWhereOf = (filter: ExpenseFilter): Prisma.ExpenseWhereInput => {
+  const spentAt: Prisma.DateTimeFilter = {
+    ...(filter.from === undefined ? {} : { gte: filter.from }),
+    ...(filter.to === undefined ? {} : { lt: filter.to }),
+  };
+
+  return {
+    ...(filter.categoryIds === undefined ? {} : { categoryId: { in: filter.categoryIds } }),
+    ...(filter.branchId === undefined ? {} : { branchId: filter.branchId }),
+    ...(Object.keys(spentAt).length === 0 ? {} : { spentAt }),
+    ...(filter.search === undefined
+      ? {}
+      : {
+          OR: [
+            { title: { contains: filter.search, mode: 'insensitive' } },
+            { note: { contains: filter.search, mode: 'insensitive' } },
+            { category: { name: { contains: filter.search, mode: 'insensitive' } } },
           ],
         }),
   };
@@ -729,6 +840,257 @@ export class AccountingRepository {
         branch: { select: { id: true, name: true } },
       },
     });
+  }
+
+  // ─────────────────────── Категории расходов (ТЗ 5.16) ─────────────────────
+
+  /**
+   * Справочник категорий целиком — **без пагинации** (как каталог прав, 0006):
+   * страница отрезала бы подкатегории от родителя.
+   *
+   * Поиск смотрит в обе стороны дерева: найденная подкатегория тянет за собой
+   * родителя (иначе она висела бы в выдаче без ветки), а найденный родитель —
+   * своих детей (иначе раздел выглядел бы пустым).
+   */
+  findManyCategories(params: ExpenseCategoryListParams): Promise<ExpenseCategoryRow[]> {
+    return this.prisma.expenseCategory.findMany({
+      where: {
+        ...(params.status === undefined ? {} : { status: params.status }),
+        ...(params.search === undefined
+          ? {}
+          : {
+              OR: [
+                { name: { contains: params.search, mode: 'insensitive' } },
+                { description: { contains: params.search, mode: 'insensitive' } },
+                { children: { some: { name: { contains: params.search, mode: 'insensitive' } } } },
+                { parent: { name: { contains: params.search, mode: 'insensitive' } } },
+              ],
+            }),
+      },
+      select: EXPENSE_CATEGORY_SELECT,
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  findCategoryById(id: string): Promise<ExpenseCategoryRow | null> {
+    return this.prisma.expenseCategory.findUnique({
+      where: { id },
+      select: EXPENSE_CATEGORY_SELECT,
+    });
+  }
+
+  findCategoryByName(name: string): Promise<{ id: string; name: string } | null> {
+    return this.prisma.expenseCategory.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+      select: { id: true, name: true },
+    });
+  }
+
+  /** Плоское дерево категорий — им обзор поднимает суммы к корню. */
+  findCategoryNodes(): Promise<CategoryNode[]> {
+    return this.prisma.expenseCategory.findMany({
+      select: { id: true, name: true, parent: { select: { id: true, name: true } } },
+    });
+  }
+
+  /** Идентификаторы подкатегорий — ими фильтр по разделу разворачивается. */
+  async findChildCategoryIds(parentId: string): Promise<string[]> {
+    const rows = await this.prisma.expenseCategory.findMany({
+      where: { parentId },
+      select: { id: true },
+    });
+
+    return rows.map(({ id }) => id);
+  }
+
+  createCategory(
+    input: Required<Pick<ExpenseCategoryWriteInput, 'name'>> & ExpenseCategoryWriteInput,
+  ): Promise<ExpenseCategoryRow> {
+    return this.prisma.expenseCategory.create({
+      data: {
+        name: input.name,
+        description: input.description ?? null,
+        parentId: input.parentId ?? null,
+        status: input.status,
+      },
+      select: EXPENSE_CATEGORY_SELECT,
+    });
+  }
+
+  updateCategory(id: string, input: ExpenseCategoryWriteInput): Promise<ExpenseCategoryRow> {
+    return this.prisma.expenseCategory.update({
+      where: { id },
+      data: input,
+      select: EXPENSE_CATEGORY_SELECT,
+    });
+  }
+
+  async deleteCategory(id: string): Promise<void> {
+    await this.prisma.expenseCategory.delete({ where: { id } });
+  }
+
+  // ───────────────────────────── Расходы ────────────────────────────────────
+
+  async findManyExpenses(
+    params: ExpenseListParams,
+  ): Promise<{ rows: ExpenseRow[]; total: number; sumCents: number }> {
+    const where = expenseWhereOf(params);
+
+    const orderBy: Prisma.ExpenseOrderByWithRelationInput[] =
+      params.sort === ExpenseSortField.Amount
+        ? [{ amount: params.order }]
+        : params.sort === ExpenseSortField.CreatedAt
+          ? [{ createdAt: params.order }]
+          : // По умолчанию — свежие платежи сверху; внутри дня порядок закреплён
+            // идентификатором, иначе строка приходила бы на двух страницах
+            // подряд (приём сессии 0024).
+            [{ spentAt: params.order }, { id: 'asc' }];
+
+    const [rows, total, sums] = await this.prisma.$transaction([
+      this.prisma.expense.findMany({
+        where,
+        select: EXPENSE_SELECT,
+        orderBy,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.expense.count({ where }),
+      this.prisma.expense.aggregate({ where, _sum: { amount: true } }),
+    ]);
+
+    return {
+      rows,
+      total,
+      sumCents: sums._sum.amount === null ? 0 : toCents(sums._sum.amount),
+    };
+  }
+
+  findExpenseById(id: string): Promise<ExpenseRow | null> {
+    return this.prisma.expense.findUnique({ where: { id }, select: EXPENSE_SELECT });
+  }
+
+  createExpense(input: ExpenseInput): Promise<ExpenseRow> {
+    return this.prisma.expense.create({
+      data: {
+        categoryId: input.categoryId,
+        title: input.title,
+        amount: money(input.amountCents),
+        spentAt: input.spentAt,
+        branchId: input.branchId,
+        note: input.note,
+        createdById: input.createdById,
+      },
+      select: EXPENSE_SELECT,
+    });
+  }
+
+  updateExpense(id: string, input: ExpenseUpdateInput): Promise<ExpenseRow> {
+    return this.prisma.expense.update({
+      where: { id },
+      data: {
+        ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.amountCents === undefined ? {} : { amount: money(input.amountCents) }),
+        ...(input.spentAt === undefined ? {} : { spentAt: input.spentAt }),
+        ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
+        ...(input.note === undefined ? {} : { note: input.note }),
+      },
+      select: EXPENSE_SELECT,
+    });
+  }
+
+  async deleteExpense(id: string): Promise<void> {
+    await this.prisma.expense.delete({ where: { id } });
+  }
+
+  findBranchById(id: string): Promise<{ id: string; name: string; status: string } | null> {
+    return this.prisma.branch.findUnique({
+      where: { id },
+      select: { id: true, name: true, status: true },
+    });
+  }
+
+  // ──────────────────────── Обзор бухгалтерии (ТЗ 5.16) ─────────────────────
+
+  /**
+   * Принятые за период деньги — по **дню платежа**, вместе с предоплатами.
+   *
+   * Строки читаются, а не агрегируются запросом: помесячная группировка
+   * требует `date_trunc`, то есть сырого SQL. Набор ограничен периодом,
+   * а период — потолком в `MAX_OVERVIEW_MONTHS` месяцев (тот же расчёт,
+   * что в статистике оттока, 0025).
+   */
+  async findIncomeFacts(from: Date, to: Date): Promise<MoneyFact[]> {
+    const rows = await this.prisma.paymentTransaction.findMany({
+      where: { paidAt: { gte: from, lt: to } },
+      select: { paidAt: true, amount: true },
+    });
+
+    return rows.map((row) => ({ at: row.paidAt, cents: toCents(row.amount) }));
+  }
+
+  /** Расходы периода — сразу с категорией: один проход кроет и график, и свод. */
+  async findExpenseFacts(from: Date, to: Date): Promise<(MoneyFact & ExpenseFact)[]> {
+    const rows = await this.prisma.expense.findMany({
+      where: { spentAt: { gte: from, lt: to } },
+      select: { spentAt: true, amount: true, categoryId: true },
+    });
+
+    return rows.map((row) => ({
+      at: row.spentAt,
+      cents: toCents(row.amount),
+      categoryId: row.categoryId,
+    }));
+  }
+
+  /**
+   * Начисления периода в разрезе «студент + группа» — основа строки
+   * «Students payment по группам» (ТЗ 5.16).
+   *
+   * Пара, а не группа: иначе не посчитать, за скольких учеников выставлялись
+   * счета, — месяцев у каждого несколько. Свод по группам делает уже чистая
+   * функция.
+   */
+  async findGroupChargeFacts(filter: ChargeFilter): Promise<GroupChargeFact[]> {
+    const groups = await this.prisma.studentPayment.groupBy({
+      by: ['groupId', 'studentId'],
+      where: chargeWhereOf(filter),
+      _sum: { amount: true, discount: true, paidAmount: true, remainingAmount: true },
+    });
+
+    return groups.map(({ groupId, studentId, _sum }) => {
+      const amount = _sum.amount === null ? 0 : toCents(_sum.amount);
+      const discount = _sum.discount === null ? 0 : toCents(_sum.discount);
+
+      return {
+        groupId,
+        studentId,
+        chargedCents: Math.max(0, amount - discount),
+        paidCents: _sum.paidAmount === null ? 0 : toCents(_sum.paidAmount),
+        debtCents: _sum.remainingAmount === null ? 0 : toCents(_sum.remainingAmount),
+      };
+    });
+  }
+
+  async findGroupsByIds(ids: string[]): Promise<GroupRef[]> {
+    if (ids.length === 0) return [];
+
+    const rows = await this.prisma.group.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        course: { select: { id: true, title: true } },
+        branch: { select: { id: true, name: true } },
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      course: { id: row.course.id, name: row.course.title },
+      branch: row.branch,
+    }));
   }
 
   // ──────────────────────────── Вспомогательное ─────────────────────────────

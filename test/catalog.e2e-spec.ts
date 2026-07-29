@@ -106,7 +106,7 @@ class InMemoryCatalogStore {
       description: null,
       status: DirectoryStatus.ACTIVE,
       createdAt: new Date('2026-07-20T00:00:00.000Z'),
-      _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 0 },
+      _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 0, expenses: 0 },
       ...overrides,
     };
     this.branches.set(branch.id, branch);
@@ -529,6 +529,8 @@ class InMemoryCatalogStore {
       // Лиды в этом наборе не заводятся: у филиала их всегда ноль
       // (маркетинговый контур проверяет `leads.e2e-spec.ts`).
       leads: 0,
+      // Расходы — тоже: их проверяет `accounting.e2e-spec.ts`.
+      expenses: 0,
     };
 
     return branch;

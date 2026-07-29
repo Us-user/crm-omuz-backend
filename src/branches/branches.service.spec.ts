@@ -20,7 +20,7 @@ const row = (overrides: Partial<BranchRow> = {}): BranchRow => ({
   description: null,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-07-27T10:00:00.000Z'),
-  _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 0 },
+  _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 0, expenses: 0 },
   ...overrides,
 });
 
@@ -55,7 +55,11 @@ describe('BranchesService', () => {
   describe('Список и карточка', () => {
     it('отдаёт постраничный список со счётчиками привязанных записей', async () => {
       repository.findMany.mockResolvedValue({
-        rows: [row({ _count: { rooms: 4, groups: 7, students: 120, employees: 9, leads: 0 } })],
+        rows: [
+          row({
+            _count: { rooms: 4, groups: 7, students: 120, employees: 9, leads: 0, expenses: 0 },
+          }),
+        ],
         total: 1,
       });
 
@@ -206,7 +210,7 @@ describe('BranchesService', () => {
 
     it('409, если к филиалу привязаны студенты — с перечислением причин', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 2, groups: 0, students: 15, employees: 0, leads: 0 } }),
+        row({ _count: { rooms: 2, groups: 0, students: 15, employees: 0, leads: 0, expenses: 0 } }),
       );
 
       const error = await service.remove(BRANCH_ID).catch((e: unknown) => e);
@@ -222,7 +226,7 @@ describe('BranchesService', () => {
 
     it('409, если в филиал записаны лиды (ТЗ 5.7)', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 5 } }),
+        row({ _count: { rooms: 0, groups: 0, students: 0, employees: 0, leads: 5, expenses: 0 } }),
       );
 
       const error = await service.remove(BRANCH_ID).catch((e: unknown) => e);
@@ -234,7 +238,7 @@ describe('BranchesService', () => {
 
     it('409, если к филиалу привязаны только сотрудники', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 0, groups: 0, students: 0, employees: 3, leads: 0 } }),
+        row({ _count: { rooms: 0, groups: 0, students: 0, employees: 3, leads: 0, expenses: 0 } }),
       );
 
       await expect(service.remove(BRANCH_ID)).rejects.toBeInstanceOf(ConflictException);
@@ -242,7 +246,7 @@ describe('BranchesService', () => {
 
     it('409, если в филиале набраны группы (ТЗ 5.5 — связь RESTRICT)', async () => {
       repository.findById.mockResolvedValue(
-        row({ _count: { rooms: 0, groups: 4, students: 0, employees: 0, leads: 0 } }),
+        row({ _count: { rooms: 0, groups: 4, students: 0, employees: 0, leads: 0, expenses: 0 } }),
       );
 
       const error = await service.remove(BRANCH_ID).catch((e: unknown) => e);

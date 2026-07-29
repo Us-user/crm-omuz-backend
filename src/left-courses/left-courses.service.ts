@@ -1,6 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
-import { formatIsoMonth, nextIsoMonth, Paginated, parseIsoMonth, shiftIsoMonth } from '../common';
+import {
+  formatIsoMonth,
+  monthSequence,
+  nextIsoMonth,
+  Paginated,
+  parseIsoMonth,
+  shiftIsoMonth,
+} from '../common';
 import type {
   LeftCourseDto,
   LeftCoursesQueryDto,
@@ -8,7 +15,7 @@ import type {
   LeftCoursesStatsQueryDto,
 } from './dto';
 import type { LeftCourseFact } from './left-courses';
-import { DEFAULT_STATS_MONTHS, MAX_STATS_MONTHS, monthSequence, summarize } from './left-courses';
+import { DEFAULT_STATS_MONTHS, MAX_STATS_MONTHS, summarize } from './left-courses';
 import type { LeftCourseFactRow, LeftCourseRow } from './left-courses.repository';
 import { LeftCoursesRepository } from './left-courses.repository';
 

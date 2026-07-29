@@ -1,4 +1,4 @@
-import { formatIsoMonth, shiftIsoMonth } from '../common';
+import { formatIsoMonth } from '../common';
 
 /**
  * Покинувшие курсы (ТЗ 5.12) — чистые функции сведения.
@@ -61,24 +61,6 @@ export interface LeftCoursesSummary {
   byGroup: GroupCount[];
   byCourse: RefCount[];
   byBranch: RefCount[];
-}
-
-/**
- * Все месяцы отрезка `[from, to]` включительно, в хронологическом порядке.
- *
- * Месяцы без единого ухода остаются в ряду с нулём — это и есть смысл функции.
- * График, в котором пустой месяц просто отсутствует, читается как «данных нет»,
- * хотя данные есть и они равны нулю; а расстояние между столбцами перестаёт
- * быть временем.
- */
-export function monthSequence(from: Date, to: Date): string[] {
-  const months: string[] = [];
-
-  for (let month = from; month.getTime() <= to.getTime(); month = shiftIsoMonth(month, 1)) {
-    months.push(formatIsoMonth(month));
-  }
-
-  return months;
 }
 
 /**

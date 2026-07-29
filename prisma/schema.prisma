@@ -327,6 +327,11 @@ model Employee {
   createdTransactions PaymentTransaction[] @relation("PaymentTransactionAuthor")
   editedTransactions  PaymentTransaction[] @relation("PaymentTransactionEditor")
 
+  /// Расходы центра, проведённые этим сотрудником (ТЗ 5.16). `SET NULL`
+  /// по той же причине, что и у кассы: расход остаётся расходом и после
+  /// того, как заведший его человек ушёл.
+  createdExpenses Expense[] @relation("ExpenseAuthor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -527,6 +532,11 @@ model Branch {
   /// Как и остальные ссылки на филиал, стоит `RESTRICT`: филиал с обращениями
   /// не удаляется, иначе исчезло бы, куда человек приходил.
   leads Lead[]
+
+  /// Расходы, отнесённые на этот филиал (ТЗ 5.16). Тоже `RESTRICT`: филиал
+  /// с расходами не удаляется, иначе из отчёта молча пропало бы, куда
+  /// уходили деньги.
+  expenses Expense[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1956,7 +1966,7 @@ model StudentPayment {
 
   /// Скидка на месяц в сомони (ТЗ 5.16: «скидки»). К оплате идёт
   /// `amount − discount`; ноль — обычное состояние.
-  discount Decimal @db.Decimal(12, 2) @default(0)
+  discount Decimal @default(0) @db.Decimal(12, 2)
 
   /// Почему дана скидка. Обязательна при ненулевой скидке — как Reason у смены
   /// статуса состава (0012): скидка без объяснения через полгода неотличима
@@ -1978,8 +1988,8 @@ model StudentPayment {
   /// и любая правка скидки, причём пересчёт — это `SUM` по платежам месяца,
   /// а не приращение. Карточка начисления вдобавок считает те же числа
   /// по своему списку платежей, поэтому расхождение было бы видно сразу.
-  paidAmount      Decimal @db.Decimal(12, 2) @default(0)
-  remainingAmount Decimal @db.Decimal(12, 2) @default(0)
+  paidAmount      Decimal @default(0) @db.Decimal(12, 2)
+  remainingAmount Decimal @default(0) @db.Decimal(12, 2)
 
   note String?
 
@@ -2074,4 +2084,106 @@ model PaymentTransaction {
   /// Обратный обход и опора под `RESTRICT` на способ оплаты.
   @@index([typeId])
   @@map("payment_transactions")
+}
+
+/// Категория расхода (ТЗ 5.16: «Expenses: категории — Tax→Income tax/VAT/
+/// Property/Social, Office, Marketing, Employees», в карте сущностей ТЗ 4 —
+/// `ExpenseCategory`).
+///
+/// **Двухуровневый справочник** (решение пользователя, сессия 0030): перечень
+/// ТЗ сам задан с вложенностью — «Tax» это не расход, а свод четырёх налогов.
+/// Плоский список потребовал бы соглашения об именах («Tax: VAT»), чтобы
+/// ответить на вопрос «сколько всего ушло на налоги», а перечисление в схеме
+/// требовало бы миграции на каждую новую статью — тот же довод, что
+/// у филиалов (0007), ступеней ментора (0021) и способов оплаты (0029).
+///
+/// Глубина ограничена **двумя** уровнями (проверка сервиса): дерево
+/// произвольной глубины пришлось бы обходить рекурсивно в каждом отчёте,
+/// а ТЗ третьего уровня не знает. Категории из ТЗ заводит миграция —
+/// это обычные строки, а не системные: центр вправе их переименовать
+/// и завести свои.
+model ExpenseCategory {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Название («Налоги», «НДС», «Маркетинг»). Уникально без учёта регистра —
+  /// проверку делает сервис, как во всех справочниках проекта.
+  name        String  @unique
+  description String?
+
+  /// Родительская категория. `null` — категория верхнего уровня.
+  /// `RESTRICT`: родителя с подкатегориями не удаляют, иначе они осиротели бы
+  /// молча, а вместе с ними и свод по разделу.
+  parentId String?           @db.Uuid
+  parent   ExpenseCategory?  @relation("ExpenseCategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children ExpenseCategory[] @relation("ExpenseCategoryTree")
+
+  status DirectoryStatus @default(ACTIVE)
+
+  /// Расходы этой категории. `RESTRICT` с их стороны: категорию, по которой
+  /// уже проводили деньги, не удаляют — её выводят из работы (`INACTIVE`).
+  expenses Expense[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId])
+  @@index([status])
+  @@map("expense_categories")
+}
+
+/// Расход центра (ТЗ 5.16: «Expenses»).
+///
+/// В карте сущностей ТЗ 4 стоит обобщённый `Transaction` — «любая денежная
+/// операция». Он **не заводится**: приход у центра уже описан
+/// `PaymentTransaction` (деньги от студента), и общая таблица на два потока
+/// потребовала бы колонки-дискриминатора, необязательного `studentId`
+/// и необязательной категории — то есть строки, половина полей которой пуста
+/// по определению. Два потока — две таблицы, и каждая отвечает на свой вопрос;
+/// сводит их обзор (`GET /accounting/overview`), а не схема.
+///
+/// Своей суммы «к оплате» у расхода нет: он либо проведён, либо нет. Поэтому
+/// ни статуса, ни остатка здесь не появляется — в отличие от начисления
+/// студенту (0029), где месяц закрывается платежами.
+model Expense {
+  id String @id @default(uuid()) @db.Uuid
+
+  categoryId String          @db.Uuid
+  category   ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  /// Назначение платежа («Аренда за сентябрь», «Таргет в Instagram»).
+  /// Обязательно: расход без названия в отчёте через полгода неотличим
+  /// от ошибки ввода — тот же довод, что у причины скидки (0029).
+  title String
+
+  /// Сумма в сомони. `Decimal`, как и вся касса (0029): из этих строк
+  /// складывается «Income vs Expense» обзора.
+  amount Decimal @db.Decimal(12, 2)
+
+  /// День, когда деньги ушли (`@db.Date`, наружу — `YYYY-MM-DD`). Отдельно
+  /// от `createdAt`: расход заводят задним числом, и в отчёт он должен попасть
+  /// по дате платежа, а не по дате ввода.
+  spentAt DateTime @db.Date
+
+  /// Филиал, на который отнесён расход (ТЗ 3.3: разрез по филиалам сквозной).
+  /// Необязателен: аренда сервера и налоги общие для центра, и приписывать
+  /// их одному филиалу значило бы искажать его отчёт.
+  branchId String? @db.Uuid
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  note String?
+
+  /// Кто провёл расход. `SET NULL`, как у всей кассы (0029).
+  createdById String?   @db.Uuid
+  createdBy   Employee? @relation("ExpenseAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Расходы за период — основной отбор и списка, и обзора.
+  @@index([spentAt])
+  /// Свод по категориям за период (ТЗ 5.16) и опора под `RESTRICT`.
+  @@index([categoryId, spentAt])
+  /// Разрез по филиалам и опора под `RESTRICT` на филиал.
+  @@index([branchId])
+  @@map("expenses")
 }

@@ -14,6 +14,13 @@ import type {
   ChargeListParams,
   ChargeRow,
   ChargeUpdateInput,
+  ExpenseCategoryRow,
+  ExpenseCategoryWriteInput,
+  ExpenseFilter,
+  ExpenseInput,
+  ExpenseListParams,
+  ExpenseRow,
+  ExpenseUpdateInput,
   PaymentTypeListParams,
   PaymentTypeRow,
   PaymentTypeWriteInput,
@@ -24,6 +31,13 @@ import type {
   TransactionUpdateInput,
 } from 'src/accounting/accounting.repository';
 import { AccountingRepository } from 'src/accounting/accounting.repository';
+import type {
+  CategoryNode,
+  ExpenseFact,
+  GroupChargeFact,
+  GroupRef,
+  MoneyFact,
+} from 'src/accounting/overview';
 import { AuthModule } from 'src/auth/auth.module';
 import { AuthRepository } from 'src/auth/auth.repository';
 import { TokenService } from 'src/auth/token.service';
@@ -125,6 +139,26 @@ interface StoredType {
   createdAt: Date;
 }
 
+interface StoredCategory {
+  id: string;
+  name: string;
+  description: string | null;
+  parentId: string | null;
+  status: DirectoryStatus;
+  createdAt: Date;
+}
+
+interface StoredExpense {
+  id: string;
+  categoryId: string;
+  title: string;
+  amountCents: number;
+  spentAt: Date;
+  branchId: string | null;
+  note: string | null;
+  createdAt: Date;
+}
+
 const money = (cents: number): string => (cents / 100).toFixed(2);
 
 /**
@@ -143,6 +177,9 @@ class InMemoryStore {
   private readonly charges = new Map<string, StoredCharge>();
   private readonly transactions = new Map<string, StoredTransaction>();
   private readonly types = new Map<string, StoredType>();
+  private readonly categories = new Map<string, StoredCategory>();
+  private readonly expenses = new Map<string, StoredExpense>();
+  private readonly branches = new Map<string, string>([['branch-1', 'Sadbarg']]);
   private readonly employees = new Map<string, string>();
 
   // ─────────────────────────── Засев данных ────────────────────────────────
@@ -204,8 +241,36 @@ class InMemoryStore {
     return id;
   }
 
+  /** Филиал с настоящим UUID: `branchId` расхода проверяется `ParseUUID`-правилом DTO. */
+  seedBranch(name = 'Profsous'): string {
+    const id = randomUUID();
+    this.branches.set(id, name);
+
+    return id;
+  }
+
+  /** Категория расхода. Без `parentId` — верхнего уровня, как в сиде миграции. */
+  seedCategory(overrides: Partial<StoredCategory> = {}): string {
+    const id = overrides.id ?? randomUUID();
+    this.categories.set(id, {
+      name: 'Офис',
+      description: null,
+      parentId: null,
+      status: DirectoryStatus.ACTIVE,
+      createdAt: new Date(),
+      ...overrides,
+      id,
+    });
+
+    return id;
+  }
+
   chargeCount(): number {
     return this.charges.size;
+  }
+
+  expenseCount(): number {
+    return this.expenses.size;
   }
 
   transactionCount(): number {
@@ -602,6 +667,287 @@ class InMemoryStore {
     return Promise.resolve(id === undefined ? null : { id });
   }
 
+  // ────────────────────────── Категории расходов ───────────────────────────
+
+  findManyCategories(params: {
+    status?: DirectoryStatus;
+    search?: string;
+  }): Promise<ExpenseCategoryRow[]> {
+    const matches = (category: StoredCategory): boolean => {
+      if (params.search === undefined) return true;
+      const needle = params.search.toLowerCase();
+      const self =
+        category.name.toLowerCase().includes(needle) ||
+        (category.description ?? '').toLowerCase().includes(needle);
+      // Поиск смотрит в обе стороны дерева — как `findManyCategories` в БД.
+      const parent = this.categories.get(category.parentId ?? '');
+      const child = [...this.categories.values()].some(
+        (candidate) =>
+          candidate.parentId === category.id && candidate.name.toLowerCase().includes(needle),
+      );
+
+      return self || child || (parent?.name.toLowerCase().includes(needle) ?? false);
+    };
+
+    return Promise.resolve(
+      [...this.categories.values()]
+        .filter((category) => params.status === undefined || category.status === params.status)
+        .filter(matches)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((category) => this.categoryRow(category)),
+    );
+  }
+
+  findCategoryById(id: string): Promise<ExpenseCategoryRow | null> {
+    const category = this.categories.get(id);
+
+    return Promise.resolve(category ? this.categoryRow(category) : null);
+  }
+
+  findCategoryByName(name: string): Promise<{ id: string; name: string } | null> {
+    const category = [...this.categories.values()].find(
+      (candidate) => candidate.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    return Promise.resolve(category ? { id: category.id, name: category.name } : null);
+  }
+
+  findCategoryNodes(): Promise<CategoryNode[]> {
+    return Promise.resolve(
+      [...this.categories.values()].map((category) => {
+        const parent = this.categories.get(category.parentId ?? '');
+
+        return {
+          id: category.id,
+          name: category.name,
+          parent: parent === undefined ? null : { id: parent.id, name: parent.name },
+        };
+      }),
+    );
+  }
+
+  findChildCategoryIds(parentId: string): Promise<string[]> {
+    return Promise.resolve(
+      [...this.categories.values()]
+        .filter((category) => category.parentId === parentId)
+        .map(({ id }) => id),
+    );
+  }
+
+  createCategory(input: ExpenseCategoryWriteInput & { name: string }): Promise<ExpenseCategoryRow> {
+    const id = this.seedCategory({
+      name: input.name,
+      description: input.description ?? null,
+      parentId: input.parentId ?? null,
+      status: input.status ?? DirectoryStatus.ACTIVE,
+    });
+
+    return this.findCategoryById(id) as Promise<ExpenseCategoryRow>;
+  }
+
+  updateCategory(id: string, input: ExpenseCategoryWriteInput): Promise<ExpenseCategoryRow> {
+    const category = this.categories.get(id);
+    if (!category) throw new Error('category not found');
+
+    if (input.name !== undefined) category.name = input.name;
+    if (input.description !== undefined) category.description = input.description;
+    if (input.parentId !== undefined) category.parentId = input.parentId;
+    if (input.status !== undefined) category.status = input.status;
+
+    return this.findCategoryById(id) as Promise<ExpenseCategoryRow>;
+  }
+
+  deleteCategory(id: string): Promise<void> {
+    this.categories.delete(id);
+
+    return Promise.resolve();
+  }
+
+  private categoryRow(category: StoredCategory): ExpenseCategoryRow {
+    const parent = this.categories.get(category.parentId ?? '');
+
+    return {
+      id: category.id,
+      name: category.name,
+      description: category.description,
+      parent: parent === undefined ? null : { id: parent.id, name: parent.name },
+      status: category.status,
+      createdAt: category.createdAt,
+      _count: {
+        children: [...this.categories.values()].filter((row) => row.parentId === category.id)
+          .length,
+        expenses: [...this.expenses.values()].filter((row) => row.categoryId === category.id)
+          .length,
+      },
+    };
+  }
+
+  // ────────────────────────────── Расходы ──────────────────────────────────
+
+  findManyExpenses(
+    params: ExpenseListParams,
+  ): Promise<{ rows: ExpenseRow[]; total: number; sumCents: number }> {
+    const rows = this.matchExpenses(params).sort(
+      (a, b) => b.spentAt.getTime() - a.spentAt.getTime() || a.id.localeCompare(b.id),
+    );
+
+    return Promise.resolve({
+      rows: rows.slice(params.skip, params.skip + params.take).map((row) => this.expenseRow(row)),
+      total: rows.length,
+      sumCents: rows.reduce((sum, row) => sum + row.amountCents, 0),
+    });
+  }
+
+  findExpenseById(id: string): Promise<ExpenseRow | null> {
+    const expense = this.expenses.get(id);
+
+    return Promise.resolve(expense ? this.expenseRow(expense) : null);
+  }
+
+  createExpense(input: ExpenseInput): Promise<ExpenseRow> {
+    const expense: StoredExpense = {
+      id: randomUUID(),
+      categoryId: input.categoryId,
+      title: input.title,
+      amountCents: input.amountCents,
+      spentAt: input.spentAt,
+      branchId: input.branchId,
+      note: input.note,
+      createdAt: new Date(),
+    };
+
+    this.expenses.set(expense.id, expense);
+
+    return Promise.resolve(this.expenseRow(expense));
+  }
+
+  updateExpense(id: string, input: ExpenseUpdateInput): Promise<ExpenseRow> {
+    const expense = this.expenses.get(id);
+    if (!expense) throw new Error('expense not found');
+
+    if (input.categoryId !== undefined) expense.categoryId = input.categoryId;
+    if (input.title !== undefined) expense.title = input.title;
+    if (input.amountCents !== undefined) expense.amountCents = input.amountCents;
+    if (input.spentAt !== undefined) expense.spentAt = input.spentAt;
+    if (input.branchId !== undefined) expense.branchId = input.branchId;
+    if (input.note !== undefined) expense.note = input.note;
+
+    return Promise.resolve(this.expenseRow(expense));
+  }
+
+  deleteExpense(id: string): Promise<void> {
+    this.expenses.delete(id);
+
+    return Promise.resolve();
+  }
+
+  findBranchById(id: string): Promise<{ id: string; name: string; status: string } | null> {
+    const name = this.branches.get(id);
+
+    return Promise.resolve(name === undefined ? null : { id, name, status: 'ACTIVE' });
+  }
+
+  private matchExpenses(filter: ExpenseFilter): StoredExpense[] {
+    return [...this.expenses.values()].filter((expense) => {
+      const searchOk =
+        filter.search === undefined ||
+        [expense.title, expense.note, this.categories.get(expense.categoryId)?.name].some((value) =>
+          (value ?? '').toLowerCase().includes(filter.search?.toLowerCase() ?? ''),
+        );
+
+      return (
+        (filter.categoryIds === undefined || filter.categoryIds.includes(expense.categoryId)) &&
+        (filter.branchId === undefined || expense.branchId === filter.branchId) &&
+        (filter.from === undefined || expense.spentAt >= filter.from) &&
+        (filter.to === undefined || expense.spentAt < filter.to) &&
+        searchOk
+      );
+    });
+  }
+
+  private expenseRow(expense: StoredExpense): ExpenseRow {
+    const category = this.categories.get(expense.categoryId);
+    const parent = this.categories.get(category?.parentId ?? '');
+
+    return {
+      id: expense.id,
+      title: expense.title,
+      amount: money(expense.amountCents),
+      spentAt: expense.spentAt,
+      note: expense.note,
+      createdAt: expense.createdAt,
+      category: {
+        id: expense.categoryId,
+        name: category?.name ?? '—',
+        parent: parent === undefined ? null : { id: parent.id, name: parent.name },
+      },
+      branch:
+        expense.branchId === null
+          ? null
+          : { id: expense.branchId, name: this.branches.get(expense.branchId) ?? '—' },
+      createdBy: null,
+    } as unknown as ExpenseRow;
+  }
+
+  // ─────────────────────────────── Обзор ───────────────────────────────────
+
+  findIncomeFacts(from: Date, to: Date): Promise<MoneyFact[]> {
+    return Promise.resolve(
+      [...this.transactions.values()]
+        .filter((row) => row.paidAt >= from && row.paidAt < to)
+        .map((row) => ({ at: row.paidAt, cents: row.amountCents })),
+    );
+  }
+
+  findExpenseFacts(from: Date, to: Date): Promise<(MoneyFact & ExpenseFact)[]> {
+    return Promise.resolve(
+      [...this.expenses.values()]
+        .filter((row) => row.spentAt >= from && row.spentAt < to)
+        .map((row) => ({ at: row.spentAt, cents: row.amountCents, categoryId: row.categoryId })),
+    );
+  }
+
+  findGroupChargeFacts(filter: ChargeFilter): Promise<GroupChargeFact[]> {
+    const byPair = new Map<string, GroupChargeFact>();
+
+    for (const charge of this.matchCharges(filter)) {
+      const key = `${charge.groupId}:${charge.studentId}`;
+      const fact = byPair.get(key) ?? {
+        groupId: charge.groupId,
+        studentId: charge.studentId,
+        chargedCents: 0,
+        paidCents: 0,
+        debtCents: 0,
+      };
+
+      fact.chargedCents += Math.max(0, charge.amountCents - charge.discountCents);
+      fact.paidCents += charge.paidCents;
+      fact.debtCents += charge.remainingCents;
+      byPair.set(key, fact);
+    }
+
+    return Promise.resolve([...byPair.values()]);
+  }
+
+  findGroupsByIds(ids: string[]): Promise<GroupRef[]> {
+    return Promise.resolve(
+      ids.flatMap((id) => {
+        const group = this.groups.get(id);
+
+        return group === undefined
+          ? []
+          : [
+              {
+                id: group.id,
+                name: group.name,
+                course: { id: group.courseId, name: group.courseTitle },
+                branch: { id: group.branchId, name: this.branches.get(group.branchId) ?? '—' },
+              },
+            ];
+      }),
+    );
+  }
+
   // ───────────────────────────── Внутреннее ────────────────────────────────
 
   /** Пересчёт принятой суммы и остатка — то же, что делает `recalcCharge` в БД. */
@@ -781,6 +1127,17 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
   const viewer = async () => (await actor(['Permission.Accounting.Views'])).token;
   const cashier = async () =>
     (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManagePayments'])).token;
+  const accountant = async () =>
+    (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManageExpenses'])).token;
+  /** Полные права раздела: обзор сводит и кассу, и расходы. */
+  const director = async () =>
+    (
+      await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManagePayments',
+        'Permission.Accounting.ManageExpenses',
+      ])
+    ).token;
 
   const studentToken = async (): Promise<string> =>
     (await tokens.issuePair({ sub: randomUUID(), sid: randomUUID(), type: AccountType.STUDENT }))
@@ -1557,6 +1914,456 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
     });
   });
 
+  describe('Категории расходов (ТЗ 5.16)', () => {
+    it('отдаёт справочник деревом: подкатегории внутри родителя', async () => {
+      const token = await viewer();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      store.seedCategory({ name: 'НДС', parentId: taxId });
+      store.seedCategory({ name: 'Офис' });
+
+      const catalog = dataOf<{
+        total: number;
+        categories: { name: string; children: { name: string }[] }[];
+      }>(await get('/api/v1/accounting/expense-categories', token).expect(200));
+
+      expect(catalog.total).toBe(3);
+      expect(catalog.categories.map(({ name }) => name)).toEqual(['Налоги', 'Офис']);
+      expect(catalog.categories[0].children.map(({ name }) => name)).toEqual(['НДС']);
+    });
+
+    it('заводится подкатегория, а третий уровень отклоняется — 422', async () => {
+      const token = await accountant();
+      const tax = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/expense-categories', token, {
+          name: 'Налоги',
+        }).expect(201),
+      );
+
+      const vat = dataOf<{ id: string; parent: { name: string } | null }>(
+        await send('post', '/api/v1/accounting/expense-categories', token, {
+          name: 'НДС',
+          parentId: tax.id,
+        }).expect(201),
+      );
+      expect(vat.parent).toMatchObject({ name: 'Налоги' });
+
+      await send('post', '/api/v1/accounting/expense-categories', token, {
+        name: 'НДС 5%',
+        parentId: vat.id,
+      }).expect(422);
+    });
+
+    it('409 на тёзку без учёта регистра', async () => {
+      const token = await accountant();
+
+      await send('post', '/api/v1/accounting/expense-categories', token, {
+        name: 'Маркетинг',
+      }).expect(201);
+      await send('post', '/api/v1/accounting/expense-categories', token, {
+        name: 'маркетинг',
+      }).expect(409);
+    });
+
+    it('пустой `parentId` поднимает категорию на верхний уровень', async () => {
+      const token = await accountant();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      const vatId = store.seedCategory({ name: 'НДС', parentId: taxId });
+
+      const updated = dataOf<{ parent: unknown }>(
+        await send('put', `/api/v1/accounting/expense-categories/${vatId}`, token, {
+          parentId: '',
+        }).expect(200),
+      );
+
+      expect(updated.parent).toBeNull();
+    });
+
+    it('категория с расходами не удаляется — 409', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса за сентябрь',
+        amount: 4500,
+        spentAt: '2026-09-05',
+      }).expect(201);
+
+      await send('delete', `/api/v1/accounting/expense-categories/${categoryId}`, token).expect(
+        409,
+      );
+    });
+
+    it('категория с подкатегориями не удаляется — 409', async () => {
+      const token = await accountant();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      store.seedCategory({ name: 'НДС', parentId: taxId });
+
+      await send('delete', `/api/v1/accounting/expense-categories/${taxId}`, token).expect(409);
+    });
+
+    it('неиспользованная категория удаляется', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Транспорт' });
+
+      await send('delete', `/api/v1/accounting/expense-categories/${categoryId}`, token).expect(
+        200,
+      );
+      await get(`/api/v1/accounting/expense-categories/${categoryId}`, token).expect(404);
+    });
+  });
+
+  describe('Расходы (ТЗ 5.16)', () => {
+    it('проводится расход, сумма набора приходит в `meta.totals`', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      const expense = dataOf<{ amount: number; spentAt: string; branch: unknown }>(
+        await send('post', '/api/v1/accounting/expenses', token, {
+          categoryId,
+          title: 'Аренда офиса за сентябрь',
+          amount: 4500.5,
+          spentAt: '2026-09-05',
+        }).expect(201),
+      );
+
+      expect(expense).toMatchObject({ amount: 4500.5, spentAt: '2026-09-05', branch: null });
+
+      const totals = metaOf<{ totals: { amount: number } }>(
+        await get('/api/v1/accounting/expenses', token).expect(200),
+      );
+      expect(totals.totals.amount).toBe(4500.5);
+    });
+
+    it('копейки не теряются на сумме расходов', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      for (const amount of [33.33, 33.33, 33.33]) {
+        await send('post', '/api/v1/accounting/expenses', token, {
+          categoryId,
+          title: 'Хозяйственные расходы',
+          amount,
+          spentAt: '2026-09-05',
+        }).expect(201);
+      }
+
+      const totals = metaOf<{ totals: { amount: number } }>(
+        await get('/api/v1/accounting/expenses', token).expect(200),
+      );
+      expect(totals.totals.amount).toBe(99.99);
+    });
+
+    it('фильтр по разделу показывает и его подкатегории', async () => {
+      const token = await accountant();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      const vatId = store.seedCategory({ name: 'НДС', parentId: taxId });
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId: vatId,
+        title: 'НДС за сентябрь',
+        amount: 1200,
+        spentAt: '2026-09-20',
+      }).expect(201);
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId: officeId,
+        title: 'Аренда',
+        amount: 4500,
+        spentAt: '2026-09-05',
+      }).expect(201);
+
+      const rows = dataOf<{ title: string }[]>(
+        await get(`/api/v1/accounting/expenses?categoryId=${taxId}`, token).expect(200),
+      );
+
+      expect(rows.map(({ title }) => title)).toEqual(['НДС за сентябрь']);
+    });
+
+    it('период отбирает расходы месяцами', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      for (const spentAt of ['2026-08-31', '2026-09-01', '2026-10-01']) {
+        await send('post', '/api/v1/accounting/expenses', token, {
+          categoryId,
+          title: `Аренда ${spentAt}`,
+          amount: 100,
+          spentAt,
+        }).expect(201);
+      }
+
+      const rows = dataOf<{ spentAt: string }[]>(
+        await get('/api/v1/accounting/expenses?from=2026-09&to=2026-09', token).expect(200),
+      );
+
+      expect(rows.map(({ spentAt }) => spentAt)).toEqual(['2026-09-01']);
+    });
+
+    it('422 на выведенную из работы категорию — расход не заводится', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({
+        name: 'Старая статья',
+        status: DirectoryStatus.INACTIVE,
+      });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса',
+        amount: 100,
+      }).expect(422);
+      expect(store.expenseCount()).toBe(0);
+    });
+
+    it('422 на несуществующий филиал', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса',
+        amount: 100,
+        branchId: randomUUID(),
+      }).expect(422);
+      expect(store.expenseCount()).toBe(0);
+    });
+
+    it('расход относится на филиал, а пустая строка делает его общим', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+      const branchId = store.seedBranch('Profsous');
+
+      const expense = dataOf<{ id: string; branch: { name: string } | null }>(
+        await send('post', '/api/v1/accounting/expenses', token, {
+          categoryId,
+          title: 'Аренда офиса',
+          amount: 100,
+          branchId,
+        }).expect(201),
+      );
+      expect(expense.branch).toMatchObject({ name: 'Profsous' });
+
+      const updated = dataOf<{ branch: unknown }>(
+        await send('put', `/api/v1/accounting/expenses/${expense.id}`, token, {
+          branchId: '',
+        }).expect(200),
+      );
+      expect(updated.branch).toBeNull();
+    });
+
+    it('удаление требует причины и убирает расход из отчёта', async () => {
+      const token = await accountant();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+      const expense = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/expenses', token, {
+          categoryId,
+          title: 'Аренда офиса',
+          amount: 4500,
+        }).expect(201),
+      );
+
+      await send('delete', `/api/v1/accounting/expenses/${expense.id}`, token, {}).expect(400);
+      await send('delete', `/api/v1/accounting/expenses/${expense.id}`, token, {
+        reason: 'Проведён дважды',
+      }).expect(200);
+
+      expect(store.expenseCount()).toBe(0);
+    });
+
+    it('право на просмотр не даёт проводить расходы — 403', async () => {
+      const token = await viewer();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      await get('/api/v1/accounting/expenses', token).expect(200);
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса',
+        amount: 100,
+      }).expect(403);
+    });
+
+    it('право на оплаты бухгалтерию расходов не открывает — 403', async () => {
+      const token = await cashier();
+      const categoryId = store.seedCategory({ name: 'Офис' });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса',
+        amount: 100,
+      }).expect(403);
+    });
+  });
+
+  describe('Обзор (ТЗ 5.16)', () => {
+    /** Начисленный месяц, частичная оплата и расход — один сценарий на всё. */
+    const seedOverview = async (token: string): Promise<void> => {
+      const { groupId } = seedGroup();
+      const charge = await chargeMonth(token, '2026-09', groupId);
+
+      await send('post', '/api/v1/accounting/payments', token, {
+        chargeId: charge.id,
+        amount: 500,
+        paidAt: '2026-09-10',
+      }).expect(201);
+
+      const categoryId = store.seedCategory({ name: 'Офис' });
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда офиса',
+        amount: 300,
+        spentAt: '2026-09-15',
+      }).expect(201);
+    };
+
+    it('сводит начисления, кассу и расходы за период', async () => {
+      const token = await director();
+      await seedOverview(token);
+
+      const overview = dataOf<{
+        period: { from: string; to: string; months: number };
+        charges: { charged: number; paid: number; debt: number };
+        income: number;
+        expense: number;
+        net: number;
+      }>(await get('/api/v1/accounting/overview?from=2026-09&to=2026-09', token).expect(200));
+
+      expect(overview.period).toEqual({ from: '2026-09', to: '2026-09', months: 1 });
+      expect(overview.charges).toEqual({ charged: 1200, paid: 500, debt: 700 });
+      expect(overview).toMatchObject({ income: 500, expense: 300, net: 200 });
+    });
+
+    it('предоплата попадает в Income, но не уменьшает долг', async () => {
+      // Ровно то различие, ради которого числа разведены: касса и план.
+      const token = await director();
+      const { groupId, studentId } = seedGroup();
+      await chargeMonth(token, '2026-09', groupId);
+
+      await send('post', '/api/v1/accounting/payments/prepayment', token, {
+        studentId,
+        amount: 1000,
+        paidAt: '2026-09-02',
+      }).expect(201);
+
+      const overview = dataOf<{ charges: { debt: number }; income: number; net: number }>(
+        await get('/api/v1/accounting/overview?from=2026-09&to=2026-09', token).expect(200),
+      );
+
+      expect(overview.income).toBe(1000);
+      expect(overview.charges.debt).toBe(1200);
+      expect(overview.net).toBe(1000);
+    });
+
+    it('неоплаченный месяц увеличивает долг, но не увеличивает Income', async () => {
+      const token = await director();
+      const { groupId } = seedGroup();
+      await chargeMonth(token, '2026-09', groupId);
+
+      const overview = dataOf<{ charges: { debt: number }; income: number; net: number }>(
+        await get('/api/v1/accounting/overview?from=2026-09&to=2026-09', token).expect(200),
+      );
+
+      expect(overview.charges.debt).toBe(1200);
+      expect(overview.income).toBe(0);
+      expect(overview.net).toBe(0);
+    });
+
+    it('график покрывает весь период, месяцы без операций остаются нулями', async () => {
+      const token = await director();
+      await seedOverview(token);
+
+      const overview = dataOf<{ byMonth: { month: string; income: number; net: number }[] }>(
+        await get('/api/v1/accounting/overview?from=2026-08&to=2026-10', token).expect(200),
+      );
+
+      expect(overview.byMonth.map(({ month }) => month)).toEqual(['2026-08', '2026-09', '2026-10']);
+      expect(overview.byMonth.map(({ income }) => income)).toEqual([0, 500, 0]);
+      expect(overview.byMonth[1].net).toBe(200);
+    });
+
+    it('расходы сводятся по корневым категориям с разбивкой внутри', async () => {
+      const token = await director();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      const vatId = store.seedCategory({ name: 'НДС', parentId: taxId });
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId: vatId,
+        title: 'НДС за сентябрь',
+        amount: 900,
+        spentAt: '2026-09-20',
+      }).expect(201);
+
+      const overview = dataOf<{
+        byCategory: {
+          category: { name: string };
+          amount: number;
+          share: number;
+          children: { category: { name: string }; amount: number }[];
+        }[];
+      }>(await get('/api/v1/accounting/overview?from=2026-09&to=2026-09', token).expect(200));
+
+      expect(overview.byCategory).toEqual([
+        {
+          category: { id: taxId, name: 'Налоги' },
+          amount: 900,
+          share: 100,
+          children: [{ category: { id: vatId, name: 'НДС' }, amount: 900 }],
+        },
+      ]);
+    });
+
+    it('«Students payment по группам» считает учеников по парам, а не по месяцам', async () => {
+      const token = await director();
+      const { groupId } = seedGroup();
+      await chargeMonth(token, '2026-08', groupId);
+      await chargeMonth(token, '2026-09', groupId);
+
+      const overview = dataOf<{
+        byGroup: { group: { name: string }; students: number; charged: number; debt: number }[];
+      }>(await get('/api/v1/accounting/overview?from=2026-08&to=2026-09', token).expect(200));
+
+      expect(overview.byGroup).toHaveLength(1);
+      expect(overview.byGroup[0]).toMatchObject({
+        group: { id: groupId, name: 'Frontend-1' },
+        students: 1,
+        charged: 2400,
+        debt: 2400,
+      });
+    });
+
+    it('400 на обратный порядок концов и на период длиннее 60 месяцев', async () => {
+      const token = await director();
+
+      await get('/api/v1/accounting/overview?from=2026-09&to=2026-01', token).expect(400);
+      await get('/api/v1/accounting/overview?from=2020-01&to=2026-01', token).expect(400);
+    });
+
+    it('по умолчанию период — последние 12 месяцев', async () => {
+      const token = await director();
+
+      const overview = dataOf<{ period: { months: number; to: string } }>(
+        await get('/api/v1/accounting/overview', token).expect(200),
+      );
+
+      expect(overview.period.months).toBe(12);
+      expect(overview.period.to).toBe(new Date().toISOString().slice(0, 7));
+    });
+
+    it('пустой центр отдаёт нули, а не падает', async () => {
+      const token = await director();
+
+      const overview = dataOf<{ income: number; expense: number; net: number; byGroup: [] }>(
+        await get('/api/v1/accounting/overview?from=2026-09&to=2026-09', token).expect(200),
+      );
+
+      expect(overview).toMatchObject({ income: 0, expense: 0, net: 0, byGroup: [] });
+    });
+
+    it('обзор закрыт правом раздела: студенту 403, сотруднику без прав 403', async () => {
+      await get('/api/v1/accounting/overview', await studentToken()).expect(403);
+      await get('/api/v1/accounting/overview', (await actor([])).token).expect(403);
+    });
+  });
+
   describe('OpenAPI', () => {
     it('пути платёжного контура описаны, а у должников только чтение', () => {
       const document = buildOpenApiDocument(app) as unknown as {
@@ -1571,8 +2378,14 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
           '/api/v1/accounting/payments/transactions',
           '/api/v1/accounting/debtors',
           '/api/v1/accounting/payment-types',
+          '/api/v1/accounting/expenses',
+          '/api/v1/accounting/expense-categories',
+          '/api/v1/accounting/overview',
         ]),
       );
+
+      // У обзора своих действий нет — витрина только читает.
+      expect(Object.keys(document.paths['/api/v1/accounting/overview'])).toEqual(['get']);
 
       // Витрина должников ничего не меняет: `POST /accounting/debtors`
       // из перечня ТЗ не заводится (решение сессии 0029).

@@ -1,6 +1,6 @@
-import { parseIsoMonth } from '../common';
+import { monthSequence, parseIsoMonth } from '../common';
 import type { LeftCourseFact, NamedRef } from './left-courses';
-import { monthSequence, summarize } from './left-courses';
+import { summarize } from './left-courses';
 
 const month = (value: string): Date => parseIsoMonth(value, 'month');
 
