@@ -6,6 +6,19 @@ import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
 import { JournalWeekSortField } from './dto';
 
+/**
+ * Поля учебного дня, общие для списка и карточки. Ведущий и длительность
+ * отдаются вместе с днём: из них считаются часы зарплаты (ТЗ 5.16), и экран,
+ * который их проставляет, — это экран журнала.
+ */
+const DAY_SELECT = {
+  id: true,
+  date: true,
+  type: true,
+  durationMinutes: true,
+  mentor: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.JournalDaySelect;
+
 /** Неделя в списке журнала: дни есть, клеток нет — их не показывает список. */
 const WEEK_SUMMARY_SELECT = {
   id: true,
@@ -14,7 +27,7 @@ const WEEK_SUMMARY_SELECT = {
   startDate: true,
   submittedAt: true,
   submittedBy: { select: { id: true, firstName: true, lastName: true } },
-  days: { select: { id: true, date: true, type: true }, orderBy: { date: 'asc' } },
+  days: { select: DAY_SELECT, orderBy: { date: 'asc' } },
 } satisfies Prisma.JournalWeekSelect;
 
 /** Неделя целиком: дни с клетками и ручные слагаемые итогов. */
@@ -22,9 +35,7 @@ const WEEK_DETAIL_SELECT = {
   ...WEEK_SUMMARY_SELECT,
   days: {
     select: {
-      id: true,
-      date: true,
-      type: true,
+      ...DAY_SELECT,
       entries: { select: { studentId: true, attendance: true, score: true } },
     },
     orderBy: { date: 'asc' },
@@ -67,9 +78,16 @@ export interface JournalListParams {
   take: number;
 }
 
+/**
+ * Учебный день для записи. `mentorId` и `durationMinutes` — то, из чего
+ * складываются часы зарплаты (ТЗ 5.16, решение 0032): `null` означает
+ * «не записано», и это законное состояние, а не ноль.
+ */
 export interface WeekDayInput {
   date: Date;
   type: LessonType;
+  mentorId: string | null;
+  durationMinutes: number | null;
 }
 
 /**
@@ -203,6 +221,24 @@ export class GroupJournalRepository {
     });
   }
 
+  /**
+   * Менторы группы — из них выбирается ведущий учебного дня.
+   *
+   * То же правило, что у слота расписания (0011): иначе «менторы группы»
+   * и «кто ведёт занятия» разошлись бы как два независимых списка, а по вторым
+   * считается зарплата (ТЗ 5.16). Статус сотрудника здесь не проверяется:
+   * занятие мог провести человек, которого позже вывели из штата, и запретить
+   * это значило бы переписать прошлое.
+   */
+  async findGroupMentorIds(groupId: string): Promise<Set<string>> {
+    const rows = await this.prisma.groupMentor.findMany({
+      where: { groupId },
+      select: { employeeId: true },
+    });
+
+    return new Set(rows.map((row) => row.employeeId));
+  }
+
   /** Состав группы: и действующий, и закрытый — журнал показывает историю. */
   findRoster(groupId: string): Promise<RosterRow[]> {
     return this.prisma.groupStudent.findMany({
@@ -266,7 +302,14 @@ export class GroupJournalRepository {
           groupId: input.groupId,
           weekNumber: input.weekNumber,
           startDate: input.startDate,
-          days: { create: input.days.map((day) => ({ date: day.date, type: day.type })) },
+          days: {
+            create: input.days.map((day) => ({
+              date: day.date,
+              type: day.type,
+              mentorId: day.mentorId,
+              durationMinutes: day.durationMinutes,
+            })),
+          },
         },
         select: { id: true },
       });
@@ -309,8 +352,21 @@ export class GroupJournalRepository {
         for (const day of input.days) {
           await tx.journalDay.upsert({
             where: { weekId_date: { weekId: input.weekId, date: day.date } },
-            create: { weekId: input.weekId, date: day.date, type: day.type },
-            update: { type: day.type },
+            create: {
+              weekId: input.weekId,
+              date: day.date,
+              type: day.type,
+              mentorId: day.mentorId,
+              durationMinutes: day.durationMinutes,
+            },
+            // Набор дней заменяется целиком (правило 0018), поэтому и ведущий
+            // с длительностью записываются целиком: не переданные в теле
+            // означают «снять», а не «оставить как было».
+            update: {
+              type: day.type,
+              mentorId: day.mentorId,
+              durationMinutes: day.durationMinutes,
+            },
           });
         }
       }

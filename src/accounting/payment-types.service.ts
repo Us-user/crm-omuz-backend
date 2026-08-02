@@ -87,10 +87,19 @@ export class PaymentTypesService {
   async remove(id: string): Promise<PaymentTypeDeletedDto> {
     const type = await this.require(id);
 
-    if (type._count.transactions > 0) {
+    // Справочник общий для прихода и расхода (0032), поэтому держат его
+    // и платежи студентов, и выплаты зарплаты — причина называет оба потока.
+    const held: readonly [string, number][] = [
+      ['платежи студентов', type._count.transactions],
+      ['выплаты зарплаты', type._count.salaryTransactions],
+    ];
+    const reasons = held.filter(([, count]) => count > 0);
+
+    if (reasons.length > 0) {
       throw new ConflictException(
-        `Этим способом уже принимали оплату: платежи (${String(type._count.transactions)}) — ` +
-          'переведите его в статус «INACTIVE» вместо удаления',
+        `Этим способом уже платили: ${reasons
+          .map(([label, count]) => `${label} (${String(count)})`)
+          .join(', ')} — переведите его в статус «INACTIVE» вместо удаления`,
       );
     }
 
@@ -123,5 +132,6 @@ const toDto = (row: PaymentTypeRow): PaymentTypeDto => ({
   description: row.description,
   status: row.status,
   transactionsCount: row._count.transactions,
+  salaryTransactionsCount: row._count.salaryTransactions,
   createdAt: row.createdAt.toISOString(),
 });

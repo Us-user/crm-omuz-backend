@@ -17,9 +17,9 @@ describe('monthlyMoney — график «Income vs Expense» (ТЗ 5.16)', () =
     );
 
     expect(row).toEqual([
-      { month: '2026-07', income: 1500, expense: 400, net: 1100 },
-      { month: '2026-08', income: 0, expense: 250, net: -250 },
-      { month: '2026-09', income: 500, expense: 0, net: 500 },
+      { month: '2026-07', income: 1500, expense: 400, salary: 0, net: 1100 },
+      { month: '2026-08', income: 0, expense: 250, salary: 0, net: -250 },
+      { month: '2026-09', income: 500, expense: 0, salary: 0, net: 500 },
     ]);
   });
 
@@ -36,7 +36,7 @@ describe('monthlyMoney — график «Income vs Expense» (ТЗ 5.16)', () =
       [money('2026-05-02', 35000)],
     );
 
-    expect(row).toEqual({ month: '2026-05', income: 100, expense: 350, net: -250 });
+    expect(row).toEqual({ month: '2026-05', income: 100, expense: 350, salary: 0, net: -250 });
   });
 
   it('копейки не теряются: разность считается в тыйинах', () => {
@@ -50,10 +50,28 @@ describe('monthlyMoney — график «Income vs Expense» (ТЗ 5.16)', () =
     expect(row.net).toBe(800.2);
   });
 
+  it('зарплата стоит третьим столбцом и вычитается из net (решение 0032)', () => {
+    const [row] = monthlyMoney(
+      months('2026-05', '2026-05'),
+      [money('2026-05-01', 100000)],
+      [money('2026-05-02', 20000)],
+      [money('2026-05-25', 50000)],
+    );
+
+    // Зарплата не входит в `expense`: она не статья расхода, а свой источник.
+    expect(row).toEqual({ month: '2026-05', income: 1000, expense: 200, salary: 500, net: 300 });
+  });
+
+  it('зарплата вне ряда столбца не заводит — как приход и расход', () => {
+    const row = monthlyMoney(months('2026-05', '2026-05'), [], [], [money('2026-04-30', 99900)]);
+
+    expect(row).toEqual([{ month: '2026-05', income: 0, expense: 0, salary: 0, net: 0 }]);
+  });
+
   it('факт вне ряда не заводит столбца, которого нет в оси', () => {
     const row = monthlyMoney(months('2026-05', '2026-05'), [money('2026-04-30', 99900)], []);
 
-    expect(row).toEqual([{ month: '2026-05', income: 0, expense: 0, net: 0 }]);
+    expect(row).toEqual([{ month: '2026-05', income: 0, expense: 0, salary: 0, net: 0 }]);
   });
 });
 

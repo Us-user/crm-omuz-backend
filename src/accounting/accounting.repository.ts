@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import type { BudgetStatus, DirectoryStatus, Prisma } from '@prisma/client';
-import { GroupStatus, GroupStudentStatus } from '@prisma/client';
+import type { BudgetStatus, DirectoryStatus, Prisma, SalaryStatus } from '@prisma/client';
+import { AvansStatus, GroupStatus, GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,9 +11,11 @@ import {
   ChargeSortField,
   ExpenseSortField,
   PaymentTypeSortField,
+  SalarySortField,
   TransactionSortField,
 } from './dto';
 import type { CategoryNode, ExpenseFact, GroupChargeFact, GroupRef, MoneyFact } from './overview';
+import type { SalaryDayFact } from './salary';
 
 // ───────────────────────────── Выборки строк ─────────────────────────────────
 
@@ -23,7 +25,9 @@ const PAYMENT_TYPE_SELECT = {
   description: true,
   status: true,
   createdAt: true,
-  _count: { select: { transactions: true } },
+  // `salaryTransactions` — справочник общий для прихода и расхода (0032):
+  // способ, которым платили зарплату, тоже нельзя удалять.
+  _count: { select: { transactions: true, salaryTransactions: true } },
 } satisfies Prisma.PaymentTypeSelect;
 
 export type PaymentTypeRow = Prisma.PaymentTypeGetPayload<{ select: typeof PAYMENT_TYPE_SELECT }>;
@@ -121,6 +125,7 @@ const BUDGET_SELECT = {
   periodFrom: true,
   periodTo: true,
   status: true,
+  salaryAllocated: true,
   createdAt: true,
   createdBy: { select: { id: true, firstName: true, lastName: true } },
   lines: {
@@ -137,6 +142,51 @@ const BUDGET_SELECT = {
 } satisfies Prisma.BudgetSelect;
 
 export type BudgetRow = Prisma.BudgetGetPayload<{ select: typeof BUDGET_SELECT }>;
+
+/**
+ * Строка ведомости зарплат (ТЗ 5.16). Снимок (`minutes`/`hourlyRate`/`total`)
+ * отдаётся вместе со строкой: у подтверждённого расчёта числа берутся из него,
+ * а не считаются заново, — в этом весь смысл подтверждения.
+ */
+const SALARY_SELECT = {
+  id: true,
+  month: true,
+  bonus: true,
+  note: true,
+  status: true,
+  minutes: true,
+  hourlyRate: true,
+  total: true,
+  confirmedAt: true,
+  createdAt: true,
+  employee: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      branch: { select: { id: true, name: true } },
+    },
+  },
+  confirmedBy: { select: { id: true, firstName: true, lastName: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.SalarySelect;
+
+export type SalaryRow = Prisma.SalaryGetPayload<{ select: typeof SALARY_SELECT }>;
+
+const SALARY_TRANSACTION_SELECT = {
+  id: true,
+  amount: true,
+  paidAt: true,
+  comment: true,
+  createdAt: true,
+  type: { select: { id: true, name: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.SalaryTransactionSelect;
+
+export type SalaryTransactionRow = Prisma.SalaryTransactionGetPayload<{
+  select: typeof SALARY_TRANSACTION_SELECT;
+}>;
 
 /** Карточка начисления: та же строка плюс платежи, которые её закрывают. */
 export interface ChargeCard {
@@ -294,6 +344,8 @@ export interface BudgetCreateInput {
   periodFrom: Date;
   periodTo: Date;
   status?: BudgetStatus;
+  /** Фонд оплаты труда; `null` — не планировали (0032). */
+  salaryAllocatedCents: number | null;
   lines: BudgetLineInput[];
   createdById: string | null;
 }
@@ -305,6 +357,7 @@ export interface BudgetUpdateInput {
   periodFrom?: Date;
   periodTo?: Date;
   status?: BudgetStatus;
+  salaryAllocatedCents?: number | null;
   /** `undefined` — набор строк не трогать; массив (в том числе пустой) — заменить. */
   lines?: BudgetLineInput[];
 }
@@ -359,11 +412,86 @@ export interface TransactionUpdateInput {
 }
 
 /**
+ * Отбор ведомости зарплат. `month` обязателен и всегда один: зарплата считается
+ * помесячно (ставка уровня и аванс привязаны к месяцу), и отрезок сложил бы
+ * в одну строку два разных расчёта.
+ */
+export interface SalaryFilter {
+  month: Date;
+  employeeId?: string;
+  branchId?: string;
+  status?: SalaryStatus;
+  search?: string;
+}
+
+export interface SalaryListParams extends SalaryFilter {
+  sort: SalarySortField;
+  order: SortOrder;
+  skip: number;
+  take: number;
+}
+
+/** Что заморозить в расчёте при подтверждении Done (ТЗ 5.16). */
+export interface SalaryConfirmInput {
+  minutes: number;
+  hourlyRateCents: number | null;
+  totalCents: number;
+  confirmedAt: Date;
+  confirmedById: string | null;
+}
+
+export interface SalaryUpdateInput {
+  bonusCents?: number;
+  note?: string | null;
+}
+
+export interface SalaryTransactionInput {
+  salaryId: string;
+  amountCents: number;
+  paidAt: Date;
+  typeId: string;
+  comment: string | null;
+  createdById: string | null;
+}
+
+/** Ступень месяца сотрудника — из неё берётся часовая ставка (ТЗ 5.14, 0021). */
+export interface MonthLevel {
+  employeeId: string;
+  levelId: string;
+  levelName: string;
+  hourlyRateCents: number;
+}
+
+/**
  * Деньги в БД: `Decimal` принимает строку, и строка честнее числа — двоичная
  * плавающая точка не участвует в записи вообще (`fromCents` вернул бы число,
  * которое пришлось бы доверять драйверу).
  */
 const money = (cents: number): string => (Math.round(cents) / 100).toFixed(2);
+
+/**
+ * Отбор расчётов — общий для страницы и для итогов `meta`: два числа
+ * на одном экране обязаны считаться по одному набору строк **по определению**,
+ * а не по совпадению (приём 0013, 0025, 0029, 0030).
+ */
+const salaryWhereOf = (filter: SalaryFilter): Prisma.SalaryWhereInput => ({
+  month: filter.month,
+  ...(filter.status === undefined ? {} : { status: filter.status }),
+  ...(filter.employeeId === undefined ? {} : { employeeId: filter.employeeId }),
+  ...(filter.branchId === undefined ? {} : { employee: { branchId: filter.branchId } }),
+  ...(filter.search === undefined
+    ? {}
+    : {
+        employee: {
+          ...(filter.branchId === undefined ? {} : { branchId: filter.branchId }),
+          OR: [
+            { firstName: { contains: filter.search, mode: 'insensitive' } },
+            { lastName: { contains: filter.search, mode: 'insensitive' } },
+            { phone: { contains: filter.search, mode: 'insensitive' } },
+          ],
+        },
+      }),
+});
 
 const chargeWhereOf = (filter: ChargeFilter): Prisma.StudentPaymentWhereInput => {
   const group: Prisma.GroupWhereInput = {
@@ -1160,6 +1288,8 @@ export class AccountingRepository {
         periodFrom: input.periodFrom,
         periodTo: input.periodTo,
         status: input.status,
+        salaryAllocated:
+          input.salaryAllocatedCents === null ? null : money(input.salaryAllocatedCents),
         createdById: input.createdById,
         lines: {
           create: input.lines.map((line) => ({
@@ -1188,6 +1318,12 @@ export class AccountingRepository {
           ...(input.periodFrom === undefined ? {} : { periodFrom: input.periodFrom }),
           ...(input.periodTo === undefined ? {} : { periodTo: input.periodTo }),
           ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.salaryAllocatedCents === undefined
+            ? {}
+            : {
+                salaryAllocated:
+                  input.salaryAllocatedCents === null ? null : money(input.salaryAllocatedCents),
+              }),
         },
       });
 
@@ -1366,6 +1502,388 @@ export class AccountingRepository {
       course: { id: row.course.id, name: row.course.title },
       branch: row.branch,
     }));
+  }
+
+  // ─────────────────────────── Зарплата (ТЗ 5.16) ───────────────────────────
+
+  async findManySalaries(params: SalaryListParams): Promise<{ rows: SalaryRow[]; total: number }> {
+    const where = salaryWhereOf(params);
+
+    // По умолчанию — по фамилии сотрудника: ведомость месяца читают списком
+    // людей, а не рейтингом сумм. `total` сортируется по колонке снимка,
+    // то есть у черновиков он `null` и они уходят в конец, — это честно
+    // и названо в Swagger.
+    const orderBy: Prisma.SalaryOrderByWithRelationInput[] =
+      params.sort === SalarySortField.Total
+        ? [{ total: params.order }, { id: 'asc' }]
+        : params.sort === SalarySortField.CreatedAt
+          ? [{ createdAt: params.order }, { id: 'asc' }]
+          : [
+              { employee: { lastName: params.order } },
+              { employee: { firstName: params.order } },
+              { id: 'asc' },
+            ];
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.salary.findMany({
+        where,
+        select: SALARY_SELECT,
+        orderBy,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.salary.count({ where }),
+    ]);
+
+    return { rows, total };
+  }
+
+  /**
+   * Весь отобранный набор в урезанном виде — под итоги `meta.totals`.
+   *
+   * Отдельный запрос вместо чтения всех строк страницами: «сколько центр
+   * должен выплатить за сентябрь» — вопрос ко всей ведомости, а не к странице
+   * (правило 0029, 0030). Набор ограничен **одним месяцем**, то есть числом
+   * сотрудников центра, — потолка поэтому нет, как и у витрины должников:
+   * усечение дало бы тихо неверный итог.
+   */
+  findSalarySetRows(filter: SalaryFilter): Promise<
+    {
+      id: string;
+      employeeId: string;
+      bonus: Prisma.Decimal;
+      status: SalaryStatus;
+      minutes: number | null;
+      hourlyRate: Prisma.Decimal | null;
+      total: Prisma.Decimal | null;
+    }[]
+  > {
+    return this.prisma.salary.findMany({
+      where: salaryWhereOf(filter),
+      // `total` читается вместе с остальным снимком: без него итоги по
+      // подтверждённым расчётам считались бы заново по живым данным — то есть
+      // ровно тем способом, от которого подтверждение и защищает.
+      select: {
+        id: true,
+        employeeId: true,
+        bonus: true,
+        status: true,
+        minutes: true,
+        hourlyRate: true,
+        total: true,
+      },
+    });
+  }
+
+  findSalaryById(id: string): Promise<SalaryRow | null> {
+    return this.prisma.salary.findUnique({ where: { id }, select: SALARY_SELECT });
+  }
+
+  /**
+   * Часы фактически проведённых занятий за месяц (ТЗ 5.16) — агрегат по дням
+   * журнала, где ведущим стоит этот сотрудник.
+   *
+   * День без проставленной длительности даёт `null` в сумме и считается нулём:
+   * занятие было, а сколько шло — не записали. Такой пробел виден в дневной
+   * раскладке карточки, и это правильнее, чем угадывать длительность
+   * по расписанию (решение 0032).
+   */
+  async findTaughtMinutes(
+    from: Date,
+    to: Date,
+    employeeIds: string[],
+  ): Promise<Map<string, number>> {
+    if (employeeIds.length === 0) return new Map();
+
+    const groups = await this.prisma.journalDay.groupBy({
+      by: ['mentorId'],
+      where: { mentorId: { in: employeeIds }, date: { gte: from, lt: to } },
+      _sum: { durationMinutes: true },
+    });
+
+    const minutes = new Map<string, number>();
+    for (const group of groups) {
+      if (group.mentorId === null) continue;
+      minutes.set(group.mentorId, group._sum.durationMinutes ?? 0);
+    }
+
+    return minutes;
+  }
+
+  /**
+   * Ступень месяца и её часовая ставка (ТЗ 5.14, решение 0021: ставка живёт
+   * в справочнике, история хранит ссылку).
+   *
+   * Месяца без записи здесь просто нет — предыдущий не тянется: пробел обязан
+   * быть видимым, и расчёт по несуществующей ставке не должен получаться
+   * молча (правило 0021).
+   */
+  async findMonthLevels(month: Date, employeeIds: string[]): Promise<Map<string, MonthLevel>> {
+    if (employeeIds.length === 0) return new Map();
+
+    const rows = await this.prisma.mentorLevelHistory.findMany({
+      where: { employeeId: { in: employeeIds }, month },
+      select: {
+        employeeId: true,
+        level: { select: { id: true, name: true, hourlyRate: true } },
+      },
+    });
+
+    return new Map(
+      rows.map((row) => [
+        row.employeeId,
+        {
+          employeeId: row.employeeId,
+          levelId: row.level.id,
+          levelName: row.level.name,
+          hourlyRateCents: toCents(row.level.hourlyRate),
+        },
+      ]),
+    );
+  }
+
+  /**
+   * «Prepaid» из ТЗ 5.16 — сумма **одобренных** заявок на аванс за этот месяц
+   * (0022: месяц зарплаты у заявки обязателен именно ради этого места).
+   * Отклонённые и нерассмотренные в расчёт не идут: денег по ним не выдавали.
+   */
+  async findApprovedAvansTotals(month: Date, employeeIds: string[]): Promise<Map<string, number>> {
+    if (employeeIds.length === 0) return new Map();
+
+    const groups = await this.prisma.avansRequest.groupBy({
+      by: ['employeeId'],
+      where: { employeeId: { in: employeeIds }, month, status: AvansStatus.APPROVED },
+      _sum: { amount: true },
+    });
+
+    return new Map(
+      groups.map(({ employeeId, _sum }) => [
+        employeeId,
+        _sum.amount === null ? 0 : toCents(_sum.amount),
+      ]),
+    );
+  }
+
+  /** «Paid» — сумма выплат по каждому расчёту набора. */
+  async findSalaryPaidTotals(salaryIds: string[]): Promise<Map<string, number>> {
+    if (salaryIds.length === 0) return new Map();
+
+    const groups = await this.prisma.salaryTransaction.groupBy({
+      by: ['salaryId'],
+      where: { salaryId: { in: salaryIds } },
+      _sum: { amount: true },
+    });
+
+    return new Map(
+      groups.map(({ salaryId, _sum }) => [
+        salaryId,
+        _sum.amount === null ? 0 : toCents(_sum.amount),
+      ]),
+    );
+  }
+
+  /**
+   * Дневная раскладка месяца (ТЗ 5.16: «Daily salaries») — учебные дни, которые
+   * этот сотрудник провёл. Своей таблицы у неё нет: `DailySalary` был бы копией
+   * журнала (0032).
+   */
+  async findTaughtDays(from: Date, to: Date, mentorId: string): Promise<SalaryDayFact[]> {
+    const rows = await this.prisma.journalDay.findMany({
+      where: { mentorId, date: { gte: from, lt: to } },
+      select: {
+        date: true,
+        durationMinutes: true,
+        week: { select: { group: { select: { id: true, name: true } } } },
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    return rows.map((row) => ({
+      date: row.date,
+      minutes: row.durationMinutes ?? 0,
+      group: row.week.group,
+    }));
+  }
+
+  /**
+   * Кому вообще заводить расчёт за месяц: тем, кто провёл хоть одно занятие,
+   * и тем, кому одобрен аванс на этот месяц.
+   *
+   * Второе слагаемое неочевидно, но обязательно: аванс, одобренный человеку
+   * без часов, всё равно выдан — без строки расчёта он потерялся бы, и
+   * «сколько центр выплатил» разошлось бы с кассой.
+   */
+  async findSalaryCandidates(from: Date, to: Date, employeeId?: string): Promise<string[]> {
+    const [taught, avans] = await Promise.all([
+      this.prisma.journalDay.findMany({
+        where: {
+          mentorId: employeeId === undefined ? { not: null } : employeeId,
+          date: { gte: from, lt: to },
+        },
+        select: { mentorId: true },
+        distinct: ['mentorId'],
+      }),
+      this.prisma.avansRequest.findMany({
+        where: {
+          ...(employeeId === undefined ? {} : { employeeId }),
+          month: from,
+          status: AvansStatus.APPROVED,
+        },
+        select: { employeeId: true },
+        distinct: ['employeeId'],
+      }),
+    ]);
+
+    const ids = new Set<string>();
+    for (const day of taught) if (day.mentorId !== null) ids.add(day.mentorId);
+    for (const request of avans) ids.add(request.employeeId);
+
+    return [...ids];
+  }
+
+  /**
+   * Заведение ведомости месяца. `skipDuplicates` опирается на уникальный
+   * `(employeeId, month)`, поэтому повторный запуск идемпотентен — тот же ход,
+   * что у начисления студентам (0029).
+   */
+  async createSalaries(
+    month: Date,
+    employeeIds: string[],
+    createdById: string | null,
+  ): Promise<number> {
+    if (employeeIds.length === 0) return 0;
+
+    const result = await this.prisma.salary.createMany({
+      data: employeeIds.map((employeeId) => ({ employeeId, month, createdById })),
+      skipDuplicates: true,
+    });
+
+    return result.count;
+  }
+
+  updateSalary(id: string, input: SalaryUpdateInput): Promise<SalaryRow> {
+    return this.prisma.salary.update({
+      where: { id },
+      data: {
+        ...(input.bonusCents === undefined ? {} : { bonus: money(input.bonusCents) }),
+        ...(input.note === undefined ? {} : { note: input.note }),
+      },
+      select: SALARY_SELECT,
+    });
+  }
+
+  /** Подтверждение Done: числа замораживаются снимком (ТЗ 5.16). */
+  confirmSalary(id: string, input: SalaryConfirmInput): Promise<SalaryRow> {
+    return this.prisma.salary.update({
+      where: { id },
+      data: {
+        status: 'DONE',
+        minutes: input.minutes,
+        hourlyRate: input.hourlyRateCents === null ? null : money(input.hourlyRateCents),
+        total: money(input.totalCents),
+        confirmedAt: input.confirmedAt,
+        confirmedById: input.confirmedById,
+      },
+      select: SALARY_SELECT,
+    });
+  }
+
+  /**
+   * Снятие подтверждения: снимок обнуляется целиком, и расчёт снова считается
+   * по живым данным. Три колонки гасятся вместе — половина снимка означала бы
+   * расчёт, у которого часы заморожены, а ставка нет (приём 0031).
+   */
+  unconfirmSalary(id: string): Promise<SalaryRow> {
+    return this.prisma.salary.update({
+      where: { id },
+      data: {
+        status: 'DRAFT',
+        minutes: null,
+        hourlyRate: null,
+        total: null,
+        confirmedAt: null,
+        confirmedById: null,
+      },
+      select: SALARY_SELECT,
+    });
+  }
+
+  async deleteSalary(id: string): Promise<void> {
+    await this.prisma.salary.delete({ where: { id } });
+  }
+
+  findSalaryTransactions(salaryId: string): Promise<SalaryTransactionRow[]> {
+    return this.prisma.salaryTransaction.findMany({
+      where: { salaryId },
+      select: SALARY_TRANSACTION_SELECT,
+      orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  countSalaryTransactions(salaryId: string): Promise<number> {
+    return this.prisma.salaryTransaction.count({ where: { salaryId } });
+  }
+
+  createSalaryTransaction(input: SalaryTransactionInput): Promise<SalaryTransactionRow> {
+    return this.prisma.salaryTransaction.create({
+      data: {
+        salaryId: input.salaryId,
+        amount: money(input.amountCents),
+        paidAt: input.paidAt,
+        typeId: input.typeId,
+        comment: input.comment,
+        createdById: input.createdById,
+      },
+      select: SALARY_TRANSACTION_SELECT,
+    });
+  }
+
+  findSalaryTransactionById(
+    id: string,
+  ): Promise<(SalaryTransactionRow & { salaryId: string }) | null> {
+    return this.prisma.salaryTransaction.findUnique({
+      where: { id },
+      select: { ...SALARY_TRANSACTION_SELECT, salaryId: true },
+    });
+  }
+
+  async deleteSalaryTransaction(id: string): Promise<void> {
+    await this.prisma.salaryTransaction.delete({ where: { id } });
+  }
+
+  /**
+   * Выплаченная зарплата за период — по **дню выплаты**, как расходы (0030).
+   *
+   * Из этих строк обзор берёт `salary`, а бюджет — освоение фонда оплаты труда.
+   * Строку `Expense` выплата не заводит (решение 0032): вторая запись о тех же
+   * деньгах требовала бы снятия при каждой отмене выплаты.
+   */
+  async findSalaryFacts(from: Date, to: Date): Promise<MoneyFact[]> {
+    const rows = await this.prisma.salaryTransaction.findMany({
+      where: { paidAt: { gte: from, lt: to } },
+      select: { paidAt: true, amount: true },
+    });
+
+    return rows.map((row) => ({ at: row.paidAt, cents: toCents(row.amount) }));
+  }
+
+  /** Сумма выплат за окно — освоение фонда оплаты труда в бюджете (0032). */
+  async sumSalaryPaid(from: Date, to: Date): Promise<number> {
+    const sums = await this.prisma.salaryTransaction.aggregate({
+      where: { paidAt: { gte: from, lt: to } },
+      _sum: { amount: true },
+    });
+
+    return sums._sum.amount === null ? 0 : toCents(sums._sum.amount);
+  }
+
+  findEmployeeById(
+    id: string,
+  ): Promise<{ id: string; firstName: string; lastName: string; status: string } | null> {
+    return this.prisma.employee.findUnique({
+      where: { id },
+      select: { id: true, firstName: true, lastName: true, status: true },
+    });
   }
 
   // ──────────────────────────── Вспомогательное ─────────────────────────────

@@ -15,6 +15,8 @@ import { PaymentTypesController } from './payment-types.controller';
 import { PaymentTypesService } from './payment-types.service';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { SalaryController } from './salary.controller';
+import { SalaryService } from './salary.service';
 
 /**
  * Бухгалтерия (ТЗ 5.16, доступна только позиции `Director`): платёжный контур,
@@ -47,6 +49,7 @@ import { PaymentsService } from './payments.service';
     ExpenseCategoriesController,
     ExpensesController,
     BudgetController,
+    SalaryController,
     OverviewController,
   ],
   providers: [
@@ -56,6 +59,7 @@ import { PaymentsService } from './payments.service';
     ExpenseCategoriesService,
     ExpensesService,
     BudgetService,
+    SalaryService,
     OverviewService,
     AccountingRepository,
   ],

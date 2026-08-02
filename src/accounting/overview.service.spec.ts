@@ -20,6 +20,7 @@ describe('OverviewService', () => {
       | 'aggregateCharges'
       | 'findIncomeFacts'
       | 'findExpenseFacts'
+      | 'findSalaryFacts'
       | 'findCategoryNodes'
       | 'findGroupChargeFacts'
       | 'findGroupsByIds'
@@ -32,6 +33,7 @@ describe('OverviewService', () => {
       aggregateCharges: jest.fn().mockResolvedValue({ chargedCents: 0, paidCents: 0 }),
       findIncomeFacts: jest.fn().mockResolvedValue([]),
       findExpenseFacts: jest.fn().mockResolvedValue([]),
+      findSalaryFacts: jest.fn().mockResolvedValue([]),
       findCategoryNodes: jest.fn().mockResolvedValue([]),
       findGroupChargeFacts: jest.fn().mockResolvedValue([]),
       findGroupsByIds: jest.fn().mockResolvedValue([]),
@@ -100,7 +102,7 @@ describe('OverviewService', () => {
       expect(charges).toEqual({ charged: 9600, paid: 6720, debt: 2880 });
     });
 
-    it('Income — принятые деньги по дню платежа, Net = Income − Expense', async () => {
+    it('Income — принятые деньги по дню платежа, Net = Income − Expense − Salary', async () => {
       repository.findIncomeFacts.mockResolvedValue([
         { at: day('2026-01-10'), cents: 500000 },
         { at: day('2026-01-20'), cents: 213000 },
@@ -114,6 +116,30 @@ describe('OverviewService', () => {
       expect(overview.income).toBe(7130);
       expect(overview.expense).toBe(5280);
       expect(overview.net).toBe(1850);
+    });
+
+    it('зарплата вычитается из Net отдельно от расходов (решение 0032)', async () => {
+      repository.findIncomeFacts.mockResolvedValue([{ at: day('2026-01-10'), cents: 1_000_000 }]);
+      repository.findExpenseFacts.mockResolvedValue([
+        { at: day('2026-01-15'), cents: 200_000, categoryId: CATEGORY_ID },
+      ]);
+      repository.findSalaryFacts.mockResolvedValue([{ at: day('2026-01-25'), cents: 500_000 }]);
+
+      const overview = await service.find(query({ from: '2026-01', to: '2026-01' }));
+
+      // Зарплата не попадает в `expense`: она не статья расхода, а свой источник.
+      expect(overview.expense).toBe(2000);
+      expect(overview.salary).toBe(5000);
+      expect(overview.net).toBe(3000);
+    });
+
+    it('выплата зарплаты в свод категорий не попадает: она не статья расхода', async () => {
+      repository.findSalaryFacts.mockResolvedValue([{ at: day('2026-01-25'), cents: 500_000 }]);
+
+      const overview = await service.find(query({ from: '2026-01', to: '2026-01' }));
+
+      expect(overview.byCategory).toEqual([]);
+      expect(overview.salary).toBe(5000);
     });
 
     it('Net уходит в минус, когда потратили больше, чем получили', async () => {

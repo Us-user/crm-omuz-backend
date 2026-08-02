@@ -74,6 +74,8 @@ export type EmployeeDeletionCheck = Prisma.EmployeeGetPayload<{
         submittedWeeks: true;
         authoredFeedback: true;
         awardedCoins: true;
+        taughtDays: true;
+        salaries: true;
       };
     };
   };
@@ -238,6 +240,10 @@ export class EmployeesRepository {
             submittedWeeks: true,
             authoredFeedback: true,
             awardedCoins: true,
+            // Проведённые занятия и расчёты зарплаты (0032): первые — след
+            // работы, вторые — деньги, и уносить их каскадом нельзя молча.
+            taughtDays: true,
+            salaries: true,
           },
         },
       },

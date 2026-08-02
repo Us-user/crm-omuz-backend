@@ -74,6 +74,8 @@ const deletable = (overrides: Partial<EmployeeDeletionCheck> = {}): EmployeeDele
     submittedWeeks: 0,
     authoredFeedback: 0,
     awardedCoins: 0,
+    taughtDays: 0,
+    salaries: 0,
   },
   ...overrides,
 });
@@ -677,6 +679,8 @@ describe('EmployeesService', () => {
             submittedWeeks: 5,
             authoredFeedback: 0,
             awardedCoins: 3,
+            taughtDays: 0,
+            salaries: 0,
           },
         }),
       );
@@ -696,6 +700,8 @@ describe('EmployeesService', () => {
             submittedWeeks: 0,
             authoredFeedback: 0,
             awardedCoins: 0,
+            taughtDays: 0,
+            salaries: 0,
           },
         }),
       );
@@ -703,6 +709,29 @@ describe('EmployeesService', () => {
       await expect(service.remove(EMPLOYEE_ID)).rejects.toThrow(
         /группы под менторством \(1\)(?!.*\(0\))/,
       );
+    });
+
+    it('проведённые занятия и расчёты зарплаты тоже держат профиль (0032)', async () => {
+      repository.findForDeletion.mockResolvedValue(
+        deletable({
+          _count: {
+            mentorGroups: 0,
+            mentorSlots: 0,
+            submittedWeeks: 0,
+            authoredFeedback: 0,
+            awardedCoins: 0,
+            taughtDays: 12,
+            salaries: 3,
+          },
+        }),
+      );
+
+      // Удаление обнулило бы ведущего у дней журнала (`SET NULL`), и прошлые
+      // ведомости зарплаты молча перестали бы сходиться.
+      await expect(service.remove(EMPLOYEE_ID)).rejects.toThrow(
+        /проведённые занятия \(12\).*расчёты зарплаты \(3\)/,
+      );
+      expect(repository.delete).not.toHaveBeenCalled();
     });
 
     it('одного занятия в расписании довольно, чтобы отказать', async () => {
@@ -714,6 +743,8 @@ describe('EmployeesService', () => {
             submittedWeeks: 0,
             authoredFeedback: 0,
             awardedCoins: 0,
+            taughtDays: 0,
+            salaries: 0,
           },
         }),
       );

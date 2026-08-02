@@ -74,9 +74,25 @@ export interface BudgetTotals {
   overspent: boolean;
 }
 
-/** Свод бюджета: строки со `spent` и итоги по ним. */
+/**
+ * Строка фонда оплаты труда. Отдельно от `lines`, потому что зарплата
+ * не является статьёй расхода (решение 0032): выплата не заводит `Expense`,
+ * и планировать её строкой `BudgetCategory` было бы нечем — у той обязательно
+ * есть статья.
+ */
+export interface BudgetSalaryTotal {
+  allocated: number;
+  spent: number;
+  remaining: number;
+  usage: number | null;
+  overspent: boolean;
+}
+
+/** Свод бюджета: строки со `spent`, фонд оплаты труда и итоги по ним. */
 export interface BudgetSummary {
   lines: BudgetLineTotal[];
+  /** `null` — фонд оплаты труда в этом плане не планировали. */
+  salary: BudgetSalaryTotal | null;
   totals: BudgetTotals;
 }
 
@@ -116,6 +132,7 @@ export function summarizeBudget(
   lines: readonly BudgetLineFact[],
   spentByCategory: ReadonlyMap<string, number>,
   childrenByParent: ReadonlyMap<string, readonly string[]>,
+  salary?: { allocatedCents: number | null; spentCents: number },
 ): BudgetSummary {
   const rows = lines.map((line) => {
     const spentCents = spentCentsOfCategory(line.categoryId, spentByCategory, childrenByParent);
@@ -137,14 +154,35 @@ export function summarizeBudget(
 
   rows.sort((a, b) => b.allocated - a.allocated || compareText(a.category.name, b.category.name));
 
-  const allocatedCents = lines.reduce((sum, line) => sum + line.allocatedCents, 0);
-  const spentCents = lines.reduce(
-    (sum, line) => sum + spentCentsOfCategory(line.categoryId, spentByCategory, childrenByParent),
-    0,
-  );
+  // Фонд оплаты труда входит в итоги, **только если его планировали**: строки
+  // для незапланированного нет, и выдумывать её значило бы утверждать, что
+  // на зарплату выделяли (тот же довод, что у расхода по незапланированной
+  // статье). Выплаты при этом происходили — их видно в обзоре.
+  const salaryLine =
+    salary === undefined || salary.allocatedCents === null
+      ? null
+      : {
+          allocated: fromCents(salary.allocatedCents),
+          spent: fromCents(salary.spentCents),
+          remaining: fromCents(salary.allocatedCents - salary.spentCents),
+          usage: usageOf(salary.allocatedCents, salary.spentCents),
+          overspent: salary.spentCents > salary.allocatedCents,
+        };
+
+  const salaryAllocatedCents = salary?.allocatedCents ?? 0;
+  const salarySpentCents = salaryLine === null ? 0 : (salary?.spentCents ?? 0);
+
+  const allocatedCents =
+    lines.reduce((sum, line) => sum + line.allocatedCents, 0) + salaryAllocatedCents;
+  const spentCents =
+    lines.reduce(
+      (sum, line) => sum + spentCentsOfCategory(line.categoryId, spentByCategory, childrenByParent),
+      0,
+    ) + salarySpentCents;
 
   return {
     lines: rows,
+    salary: salaryLine,
     totals: {
       allocated: fromCents(allocatedCents),
       spent: fromCents(spentCents),

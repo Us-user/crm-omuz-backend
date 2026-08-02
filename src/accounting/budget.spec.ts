@@ -196,6 +196,7 @@ describe('summarizeBudget', () => {
   it('пустой план отдаёт нули, а не падает', () => {
     expect(summarizeBudget([], new Map(), new Map())).toEqual({
       lines: [],
+      salary: null,
       totals: { allocated: 0, spent: 0, remaining: 0, usage: null, overspent: false },
     });
   });
@@ -237,5 +238,61 @@ describe('BUDGET_STATUS_TITLES', () => {
       ACTIVE: 'Действует',
       CLOSED: 'Закрыт',
     });
+  });
+});
+
+describe('summarizeBudget — фонд оплаты труда (ТЗ 5.16, решение 0032)', () => {
+  const line = {
+    id: 'l1',
+    categoryId: 'office',
+    categoryName: 'Офис',
+    parent: null,
+    allocatedCents: 1_000_000,
+    note: null,
+  };
+
+  it('план фонда считается по выплатам и входит в итоги', () => {
+    const summary = summarizeBudget([line], new Map([['office', 400_000]]), new Map(), {
+      allocatedCents: 12_000_000,
+      spentCents: 9_840_000,
+    });
+
+    expect(summary.salary).toEqual({
+      allocated: 120_000,
+      spent: 98_400,
+      remaining: 21_600,
+      usage: 82,
+      overspent: false,
+    });
+    // Итоги складывают строки и фонд: 10 000 + 120 000 выделено, 4000 + 98 400 ушло.
+    expect(summary.totals).toMatchObject({ allocated: 130_000, spent: 102_400 });
+  });
+
+  it('незапланированный фонд в итоги не входит — строки для него нет', () => {
+    const summary = summarizeBudget([line], new Map([['office', 400_000]]), new Map(), {
+      allocatedCents: null,
+      spentCents: 9_840_000,
+    });
+
+    expect(summary.salary).toBeNull();
+    expect(summary.totals).toMatchObject({ allocated: 10_000, spent: 4000 });
+  });
+
+  it('перерасход фонда виден отрицательным остатком, а не отказом', () => {
+    const summary = summarizeBudget([], new Map(), new Map(), {
+      allocatedCents: 100_000,
+      spentCents: 150_000,
+    });
+
+    expect(summary.salary).toMatchObject({ remaining: -500, overspent: true, usage: 150 });
+  });
+
+  it('нулевой фонд освоения не даёт: делить не на что', () => {
+    const summary = summarizeBudget([], new Map(), new Map(), {
+      allocatedCents: 0,
+      spentCents: 50_000,
+    });
+
+    expect(summary.salary).toMatchObject({ usage: null, overspent: true });
   });
 });

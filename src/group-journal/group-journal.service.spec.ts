@@ -37,8 +37,13 @@ const day = (id: string, iso: string, type: LessonType, entries: Entry[] = []): 
   id,
   date: date(iso),
   type,
+  mentor: null,
+  durationMinutes: null,
   entries,
 });
+
+/** Ментор группы: только он может стоять ведущим учебного дня (0011, 0032). */
+const MENTOR_ID = '99999999-9999-4999-8999-999999999999';
 
 const week = (overrides: Partial<WeekDetailRow> = {}): WeekDetailRow => ({
   id: WEEK_ID,
@@ -89,6 +94,7 @@ describe('GroupJournalService', () => {
       | 'aggregateWeeks'
       | 'findWeek'
       | 'findRoster'
+      | 'findGroupMentorIds'
       | 'findStudents'
       | 'nextWeekNumber'
       | 'findConflictingDays'
@@ -104,6 +110,7 @@ describe('GroupJournalService', () => {
   beforeEach(() => {
     repository = {
       findGroup: jest.fn().mockResolvedValue({ id: GROUP_ID, name: 'Frontend-1' }),
+      findGroupMentorIds: jest.fn().mockResolvedValue(new Set([MENTOR_ID])),
       findWeeks: jest.fn().mockResolvedValue({ rows: [week()], total: 1 }),
       aggregateWeeks: jest
         .fn()
@@ -299,8 +306,18 @@ describe('GroupJournalService', () => {
         weekNumber: 4,
         startDate: date('2026-09-07'),
         days: [
-          { date: date('2026-09-07'), type: LessonType.LECTURE },
-          { date: date('2026-09-09'), type: LessonType.EXAM },
+          {
+            date: date('2026-09-07'),
+            type: LessonType.LECTURE,
+            mentorId: null,
+            durationMinutes: null,
+          },
+          {
+            date: date('2026-09-09'),
+            type: LessonType.EXAM,
+            mentorId: null,
+            durationMinutes: null,
+          },
         ],
         // Итог заводится действующему составу: покинувший группу в новой неделе
         // не участвует.
@@ -312,7 +329,16 @@ describe('GroupJournalService', () => {
       await service.create(GROUP_ID, { startDate: '2026-09-07', days: [{ date: '2026-09-07' }] });
 
       expect(repository.createWeek).toHaveBeenCalledWith(
-        expect.objectContaining({ days: [{ date: date('2026-09-07'), type: LessonType.LECTURE }] }),
+        expect.objectContaining({
+          days: [
+            {
+              date: date('2026-09-07'),
+              type: LessonType.LECTURE,
+              mentorId: null,
+              durationMinutes: null,
+            },
+          ],
+        }),
       );
     });
 
@@ -785,5 +811,102 @@ describe('GroupJournalService', () => {
 
       await expect(service.remove(GROUP_ID, WEEK_ID)).rejects.toBeInstanceOf(NotFoundException);
     });
+  });
+});
+
+describe('GroupJournalService — ведущий и часы учебного дня (ТЗ 5.16, решение 0032)', () => {
+  const GROUP = '11111111-1111-1111-1111-111111111111';
+  const OUTSIDER = '88888888-8888-4888-8888-888888888888';
+
+  let repository: jest.Mocked<
+    Pick<
+      GroupJournalRepository,
+      | 'findGroup'
+      | 'findGroupMentorIds'
+      | 'findRoster'
+      | 'nextWeekNumber'
+      | 'findConflictingDays'
+      | 'createWeek'
+      | 'findStudents'
+    >
+  >;
+  let service: GroupJournalService;
+
+  beforeEach(() => {
+    repository = {
+      findGroup: jest.fn().mockResolvedValue({ id: GROUP, name: 'Frontend-1' }),
+      findGroupMentorIds: jest.fn().mockResolvedValue(new Set([MENTOR_ID])),
+      findRoster: jest.fn().mockResolvedValue([]),
+      nextWeekNumber: jest.fn().mockResolvedValue(1),
+      findConflictingDays: jest.fn().mockResolvedValue([]),
+      createWeek: jest.fn().mockResolvedValue(week({ groupId: GROUP })),
+      findStudents: jest.fn().mockResolvedValue([]),
+    };
+
+    service = new GroupJournalService(repository as unknown as GroupJournalRepository);
+  });
+
+  it('записывает ведущего и длительность занятия', async () => {
+    await service.create(GROUP, {
+      startDate: '2026-09-07',
+      days: [{ date: '2026-09-07', mentorId: MENTOR_ID, durationMinutes: 90 }],
+    });
+
+    expect(repository.createWeek).toHaveBeenCalledWith(
+      expect.objectContaining({
+        days: [expect.objectContaining({ mentorId: MENTOR_ID, durationMinutes: 90 })],
+      }),
+    );
+  });
+
+  it('день без ведущего и длительности — законное состояние, а не отказ', async () => {
+    await service.create(GROUP, { startDate: '2026-09-07', days: [{ date: '2026-09-07' }] });
+
+    expect(repository.createWeek).toHaveBeenCalledWith(
+      expect.objectContaining({
+        days: [expect.objectContaining({ mentorId: null, durationMinutes: null })],
+      }),
+    );
+  });
+
+  it('422 на постороннего сотрудника: вести занятие может только ментор группы', async () => {
+    await expect(
+      service.create(GROUP, {
+        startDate: '2026-09-07',
+        days: [{ date: '2026-09-07', mentorId: OUTSIDER, durationMinutes: 90 }],
+      }),
+    ).rejects.toBeInstanceOf(BusinessRuleException);
+    expect(repository.createWeek).not.toHaveBeenCalled();
+  });
+
+  it('менторы группы спрашиваются одним запросом на весь набор дней', async () => {
+    await service.create(GROUP, {
+      startDate: '2026-09-07',
+      days: [
+        { date: '2026-09-07', mentorId: MENTOR_ID, durationMinutes: 90 },
+        { date: '2026-09-09', mentorId: MENTOR_ID, durationMinutes: 90 },
+      ],
+    });
+
+    expect(repository.findGroupMentorIds).toHaveBeenCalledTimes(1);
+  });
+
+  it('без ведущих состав менторов вообще не спрашивается', async () => {
+    await service.create(GROUP, { startDate: '2026-09-07', days: [{ date: '2026-09-07' }] });
+
+    expect(repository.findGroupMentorIds).not.toHaveBeenCalled();
+  });
+
+  it('пустая строка снимает ведущего — правило пустой строки (0011)', async () => {
+    await service.create(GROUP, {
+      startDate: '2026-09-07',
+      days: [{ date: '2026-09-07', mentorId: '', durationMinutes: 90 }],
+    });
+
+    expect(repository.createWeek).toHaveBeenCalledWith(
+      expect.objectContaining({
+        days: [expect.objectContaining({ mentorId: null, durationMinutes: 90 })],
+      }),
+    );
   });
 });

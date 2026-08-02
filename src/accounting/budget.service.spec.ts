@@ -40,6 +40,7 @@ const row = (overrides: Partial<BudgetRow> = {}): BudgetRow => ({
   periodFrom: new Date('2026-01-01T00:00:00.000Z'),
   periodTo: new Date('2026-03-01T00:00:00.000Z'),
   status: BudgetStatus.DRAFT,
+  salaryAllocated: null,
   createdAt: new Date('2026-01-05T09:00:00.000Z'),
   createdBy: null,
   lines: [budgetLine()],

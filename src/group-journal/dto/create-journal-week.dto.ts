@@ -6,11 +6,16 @@ import {
   ArrayMinSize,
   IsArray,
   IsEnum,
+  IsInt,
   IsOptional,
+  IsString,
   Matches,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
+import { MAX_LESSON_MINUTES } from '../../accounting/salary';
 import { ISO_DATE_PATTERN } from '../../common';
 
 /** Сколько учебных дней помещается в неделю — ровно семь суток. */
@@ -32,6 +37,34 @@ export class JournalDayInputDto {
   @IsOptional()
   @IsEnum(LessonType)
   type?: LessonType;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Кто **фактически** провёл занятие — только из менторов группы (422 на постороннего), ' +
+      'как и ведущий слота расписания. Отсюда берутся часы зарплаты (ТЗ 5.16), поэтому ' +
+      'ставится он в журнале, а не в расписании: слот — это план, журнал фиксирует факт.\n\n' +
+      'Пустая строка снимает ведущего.',
+  })
+  @IsOptional()
+  @IsString()
+  mentorId?: string;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: MAX_LESSON_MINUTES,
+    nullable: true,
+    description:
+      'Длительность занятия в **минутах** («полтора часа» — это 90). Из неё складываются ' +
+      'часы месяца в ведомости зарплат. `null` снимает значение: день, длительность ' +
+      'которого не записали, считается нулём часов, и этот пробел виден в карточке расчёта.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(MAX_LESSON_MINUTES)
+  durationMinutes?: number | null;
 }
 
 /**

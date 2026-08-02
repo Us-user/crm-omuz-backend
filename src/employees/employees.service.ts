@@ -327,6 +327,11 @@ export class EmployeesService {
       ['финализированные недели журнала', employee._count.submittedWeeks],
       ['заметки о студентах', employee._count.authoredFeedback],
       ['начисления коинов', employee._count.awardedCoins],
+      // Часы зарплаты считаются по проведённым занятиям (ТЗ 5.16, 0032):
+      // удаление профиля обнулило бы ведущего у дней журнала (`SET NULL`),
+      // и прошлые ведомости молча перестали бы сходиться.
+      ['проведённые занятия', employee._count.taughtDays],
+      ['расчёты зарплаты', employee._count.salaries],
     ];
 
     const blocking = held.filter(([, count]) => count > 0);

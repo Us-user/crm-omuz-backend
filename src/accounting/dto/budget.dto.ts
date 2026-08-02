@@ -78,6 +78,30 @@ export class BudgetLineDto {
   note!: string | null;
 }
 
+/**
+ * Фонд оплаты труда в плане (ТЗ 5.16).
+ *
+ * Отдельно от строк по статьям, потому что зарплата **не является статьёй
+ * расхода**: выплата не заводит `Expense` (решение 0032), и `spent` для неё
+ * считается по выплатам периода, а не по расходам.
+ */
+export class BudgetSalaryDto {
+  @ApiProperty({ example: 120000, description: 'Сколько выделено на зарплату, в сомони.' })
+  allocated!: number;
+
+  @ApiProperty({ example: 98400, description: 'Выплачено за период; считается, а не хранится.' })
+  spent!: number;
+
+  @ApiProperty({ example: 21600 })
+  remaining!: number;
+
+  @ApiPropertyOptional({ nullable: true, example: 82 })
+  usage!: number | null;
+
+  @ApiProperty({ example: false })
+  overspent!: boolean;
+}
+
 /** Итоги плана — одни на весь бюджет. */
 export class BudgetTotalsDto {
   @ApiProperty({ example: 50000 })
@@ -127,7 +151,19 @@ export class BudgetDto {
   @ApiProperty({ example: 3, description: 'Сколько статей запланировано.' })
   linesCount!: number;
 
-  @ApiProperty({ type: BudgetTotalsDto })
+  @ApiPropertyOptional({
+    type: BudgetSalaryDto,
+    nullable: true,
+    description:
+      'План фонда оплаты труда. `null` — его не планировали, и тогда он **не входит** ' +
+      'в `totals`: строки для него нет, а выдуманная утверждала бы, что зарплату планировали.',
+  })
+  salary!: BudgetSalaryDto | null;
+
+  @ApiProperty({
+    type: BudgetTotalsDto,
+    description: 'Итоги по строкам плана **вместе** с фондом оплаты труда, если он запланирован.',
+  })
   totals!: BudgetTotalsDto;
 
   @ApiPropertyOptional({
@@ -205,6 +241,21 @@ export class CreateBudgetDto {
   @IsOptional()
   @IsEnum(BudgetStatus)
   status?: BudgetStatus;
+
+  @ApiPropertyOptional({
+    example: 120000,
+    nullable: true,
+    description:
+      'Сколько выделено на фонд оплаты труда, в сомони (ТЗ 5.16). Отдельным полем, а не ' +
+      'строкой по статье: зарплата не является статьёй расхода — выплата не заводит ' +
+      '`Expense`, и её освоение считается по выплатам периода. `null` снимает план ' +
+      'фонда, и тогда он перестаёт входить в итоги.',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(MAX_MONEY_AMOUNT)
+  salaryAllocated?: number | null;
 
   @ApiPropertyOptional({
     type: [BudgetLineInputDto],

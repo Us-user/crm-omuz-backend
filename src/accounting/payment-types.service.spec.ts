@@ -14,7 +14,7 @@ const row = (overrides: Partial<PaymentTypeRow> = {}): PaymentTypeRow => ({
   description: null,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-08-01T09:00:00.000Z'),
-  _count: { transactions: 0 },
+  _count: { transactions: 0, salaryTransactions: 0 },
   ...overrides,
 });
 
@@ -50,7 +50,7 @@ describe('PaymentTypesService', () => {
 
   it('отдаёт число платежей рядом со способом', async () => {
     repository.findManyTypes.mockResolvedValue({
-      rows: [row({ _count: { transactions: 12 } })],
+      rows: [row({ _count: { transactions: 12, salaryTransactions: 0 } })],
       total: 1,
     });
 
@@ -125,9 +125,11 @@ describe('PaymentTypesService', () => {
   });
 
   it('409 на способ с платежами — с числом и предложением INACTIVE', async () => {
-    repository.findTypeById.mockResolvedValue(row({ _count: { transactions: 7 } }));
+    repository.findTypeById.mockResolvedValue(
+      row({ _count: { transactions: 7, salaryTransactions: 0 } }),
+    );
 
-    await expect(service.remove(TYPE_ID)).rejects.toThrow(/платежи \(7\)/);
+    await expect(service.remove(TYPE_ID)).rejects.toThrow(/платежи студентов \(7\)/);
     expect(repository.deleteType).not.toHaveBeenCalled();
   });
 
@@ -136,5 +138,26 @@ describe('PaymentTypesService', () => {
 
     await expect(service.update(TYPE_ID, { name: 'x' })).rejects.toBeInstanceOf(NotFoundException);
     expect(repository.updateType).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentTypesService — способ, которым платили зарплату (0032)', () => {
+  it('409 называет выплаты зарплаты, даже если платежей студентов нет', async () => {
+    const repository = {
+      findTypeById: jest.fn().mockResolvedValue({
+        id: TYPE_ID,
+        name: 'Наличные',
+        description: null,
+        status: DirectoryStatus.ACTIVE,
+        createdAt: new Date(),
+        _count: { transactions: 0, salaryTransactions: 4 },
+      }),
+      deleteType: jest.fn(),
+    } as unknown as jest.Mocked<AccountingRepository>;
+
+    const service = new PaymentTypesService(repository);
+
+    await expect(service.remove(TYPE_ID)).rejects.toThrow(/выплаты зарплаты \(4\)/);
+    expect(repository.deleteType).not.toHaveBeenCalled();
   });
 });

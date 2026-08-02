@@ -41,10 +41,16 @@ export class OverviewMonthDto {
   @ApiProperty({ example: 12400 })
   income!: number;
 
-  @ApiProperty({ example: 8100 })
+  @ApiProperty({ example: 8100, description: 'Расходы центра — **без** зарплаты.' })
   expense!: number;
 
-  @ApiProperty({ example: 4300, description: '`income − expense`; бывает отрицательным.' })
+  @ApiProperty({ example: 3400, description: 'Выплаченная за месяц зарплата (ТЗ 5.16).' })
+  salary!: number;
+
+  @ApiProperty({
+    example: 900,
+    description: '`income − expense − salary`; бывает отрицательным.',
+  })
   net!: number;
 }
 
@@ -113,16 +119,36 @@ export class OverviewDto {
   })
   income!: number;
 
-  @ApiProperty({ example: 52800, description: 'Расходы периода — по дню платежа.' })
+  @ApiProperty({
+    example: 52800,
+    description: 'Расходы периода по дню платежа — **без зарплаты**, она стоит отдельно.',
+  })
   expense!: number;
 
-  @ApiProperty({ example: 18500, description: '«Net» = `income − expense`.' })
+  @ApiProperty({
+    example: 34200,
+    description:
+      'Выплаченная за период зарплата (ТЗ 5.16), по дню выплаты. Отдельным числом, а не ' +
+      'статьёй расходов: выплата не заводит `Expense` — деньги уже записаны выплатой, ' +
+      'и вторая копия того же числа расходилась бы с первой при каждой отмене (решение 0032).',
+  })
+  salary!: number;
+
+  @ApiProperty({ example: -15700, description: '«Net» = `income − expense − salary`.' })
   net!: number;
 
-  @ApiProperty({ type: [OverviewMonthDto], description: 'График «Income vs Expense» по месяцам.' })
+  @ApiProperty({
+    type: [OverviewMonthDto],
+    description: 'График «Income vs Expense» по месяцам; зарплата — третий столбец.',
+  })
   byMonth!: OverviewMonthDto[];
 
-  @ApiProperty({ type: [OverviewCategoryDto], description: 'Расходы по корневым категориям.' })
+  @ApiProperty({
+    type: [OverviewCategoryDto],
+    description:
+      'Расходы по корневым категориям. Зарплаты здесь нет: она не статья расхода, ' +
+      'и её сумма стоит отдельным полем `salary`.',
+  })
   byCategory!: OverviewCategoryDto[];
 
   @ApiProperty({ type: [OverviewGroupDto], description: '«Students payment по группам».' })

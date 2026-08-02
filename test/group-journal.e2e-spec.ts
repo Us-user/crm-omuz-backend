@@ -71,6 +71,9 @@ interface StoredDay {
   id: string;
   date: Date;
   type: LessonType;
+  /** Кто фактически провёл занятие — из него считаются часы зарплаты (ТЗ 5.16). */
+  mentorId: string | null;
+  durationMinutes: number | null;
 }
 
 interface StoredEntry {
@@ -113,6 +116,8 @@ class InMemoryJournalStore {
   readonly memberships = new Map<string, RosterRow[]>();
   readonly weeks = new Map<string, StoredWeek>();
   readonly employeesByAccount = new Map<string, StoredEmployee>();
+  /** Менторы группы: из них выбирается ведущий учебного дня (правило 0011, 0032). */
+  readonly groupMentors = new Map<string, Set<string>>();
   /** Начисленные коины: студент → сумма. Проверяется тестами финализации. */
   readonly coins = new Map<string, number>();
   readonly coinReasons: { studentId: string; amount: number; reason: string }[] = [];
@@ -121,6 +126,7 @@ class InMemoryJournalStore {
     const id = randomUUID();
     this.groups.set(id, { id, name });
     this.memberships.set(id, []);
+    this.groupMentors.set(id, new Set());
 
     return id;
   }
@@ -150,6 +156,24 @@ class InMemoryJournalStore {
     this.employeesByAccount.set(accountId, employee);
 
     return employee;
+  }
+
+  /** Назначить сотрудника ментором группы — без этого он не может вести день. */
+  addGroupMentor(groupId: string, employeeId: string): void {
+    const mentors = this.groupMentors.get(groupId) ?? new Set<string>();
+    mentors.add(employeeId);
+    this.groupMentors.set(groupId, mentors);
+  }
+
+  findGroupMentorIds(groupId: string): Promise<Set<string>> {
+    return Promise.resolve(new Set(this.groupMentors.get(groupId) ?? []));
+  }
+
+  /** Профиль ментора для строки дня — как вложенный `select` в репозитории. */
+  private mentorOf(mentorId: string | null): StoredEmployee | null {
+    if (mentorId === null) return null;
+
+    return [...this.employeesByAccount.values()].find((item) => item.id === mentorId) ?? null;
   }
 
   // ─── GroupJournalRepository ───
@@ -255,7 +279,13 @@ class InMemoryJournalStore {
       startDate: input.startDate,
       submittedAt: null,
       submittedById: null,
-      days: input.days.map((day) => ({ id: randomUUID(), date: day.date, type: day.type })),
+      days: input.days.map((day) => ({
+        id: randomUUID(),
+        date: day.date,
+        type: day.type,
+        mentorId: day.mentorId,
+        durationMinutes: day.durationMinutes,
+      })),
       entries: new Map(),
       results: new Map(
         input.studentIds.map((studentId) => [studentId, { bonus: 0, exam: 0, sum: 0 }]),
@@ -272,7 +302,7 @@ class InMemoryJournalStore {
     if (input.startDate !== undefined) week.startDate = input.startDate;
 
     if (input.days !== undefined) {
-      const wanted = new Map(input.days.map((day) => [day.date.getTime(), day.type]));
+      const wanted = new Map(input.days.map((day) => [day.date.getTime(), day]));
 
       // Убранный день уносит свои клетки — как каскад в БД.
       for (const day of week.days) {
@@ -286,7 +316,15 @@ class InMemoryJournalStore {
       week.days = input.days.map((day) => {
         const existing = week.days.find((item) => item.date.getTime() === day.date.getTime());
 
-        return { id: existing?.id ?? randomUUID(), date: day.date, type: day.type };
+        // Набор дней заменяется целиком, поэтому ведущий и длительность тоже
+        // записываются целиком — ровно то, что делает `upsert` в репозитории.
+        return {
+          id: existing?.id ?? randomUUID(),
+          date: day.date,
+          type: day.type,
+          mentorId: day.mentorId,
+          durationMinutes: day.durationMinutes,
+        };
       });
     }
 
@@ -385,7 +423,13 @@ class InMemoryJournalStore {
       startDate: week.startDate,
       submittedAt: week.submittedAt,
       submittedBy: this.submitter(week),
-      days: this.days(week).map((day) => ({ id: day.id, date: day.date, type: day.type })),
+      days: this.days(week).map((day) => ({
+        id: day.id,
+        date: day.date,
+        type: day.type,
+        mentor: this.mentorOf(day.mentorId),
+        durationMinutes: day.durationMinutes,
+      })),
     };
   }
 
@@ -396,6 +440,8 @@ class InMemoryJournalStore {
         id: day.id,
         date: day.date,
         type: day.type,
+        mentor: this.mentorOf(day.mentorId),
+        durationMinutes: day.durationMinutes,
         entries: [...week.entries.values()]
           .filter((entry) => entry.dayId === day.id)
           .map((entry) => ({
@@ -1029,6 +1075,114 @@ describe('Журнал группы (e2e, хранилище в памяти)', 
         startDate: '2026-09-07',
         days: [{ date: '2026-09-07' }],
       }).expect(201);
+    });
+  });
+
+  describe('Ведущий и часы учебного дня (ТЗ 5.16, решение 0032)', () => {
+    /**
+     * Группа, у которой есть ментор. Часы зарплаты считаются по журналу,
+     * а не по расписанию: слот — это план, журнал фиксирует факт (0018).
+     */
+    const setupWithMentor = (): { groupId: string; mentorId: string } => {
+      const groupId = store.addGroup();
+      const mentor = store.addEmployee(randomUUID(), 'Фаррух', 'Раҳимов');
+      store.addGroupMentor(groupId, mentor.id);
+
+      return { groupId, mentorId: mentor.id };
+    };
+
+    it('записывает ведущего и длительность и отдаёт их в дне недели', async () => {
+      const token = await actor(ALL);
+      const { groupId, mentorId } = setupWithMentor();
+
+      const created = await post(`${journalUrl(groupId)}/weeks`, token, {
+        startDate: '2026-09-07',
+        days: [{ date: '2026-09-07', mentorId, durationMinutes: 90 }],
+      }).expect(201);
+
+      expect(dataOf<WeekBody>(created).days[0]).toMatchObject({
+        date: '2026-09-07',
+        durationMinutes: 90,
+        mentor: { id: mentorId, firstName: 'Фаррух', lastName: 'Раҳимов' },
+      });
+    });
+
+    it('день без ведущего и длительности остаётся законным: оба поля null', async () => {
+      const token = await actor(ALL);
+      const { groupId } = setupWithMentor();
+
+      const created = await post(`${journalUrl(groupId)}/weeks`, token, {
+        startDate: '2026-09-07',
+        days: [{ date: '2026-09-07' }],
+      }).expect(201);
+
+      expect(dataOf<WeekBody>(created).days[0]).toMatchObject({
+        mentor: null,
+        durationMinutes: null,
+      });
+    });
+
+    it('422 на постороннего сотрудника — неделя не заведена', async () => {
+      const token = await actor(ALL);
+      const groupId = store.addGroup();
+      const outsider = store.addEmployee(randomUUID(), 'Чужой', 'Сотрудник');
+
+      await post(`${journalUrl(groupId)}/weeks`, token, {
+        startDate: '2026-09-07',
+        days: [{ date: '2026-09-07', mentorId: outsider.id, durationMinutes: 90 }],
+      }).expect(422);
+
+      const list = await get(journalUrl(groupId), token).expect(200);
+      expect(dataOf<unknown[]>(list)).toHaveLength(0);
+    });
+
+    it('правка недели заменяет ведущего вместе с набором дней', async () => {
+      const token = await actor(ALL);
+      const { groupId, mentorId } = setupWithMentor();
+      const created = await post(`${journalUrl(groupId)}/weeks`, token, {
+        startDate: '2026-09-07',
+        days: [{ date: '2026-09-07', mentorId, durationMinutes: 90 }],
+      }).expect(201);
+      const weekId = dataOf<WeekBody>(created).id;
+
+      // Набор дней заменяется целиком (правило 0018), поэтому непереданный
+      // ведущий означает «снять», а не «оставить как было».
+      const updated = await put(`${journalUrl(groupId)}/weeks/${weekId}`, token, {
+        days: [{ date: '2026-09-07', durationMinutes: 120 }],
+      }).expect(200);
+
+      expect(dataOf<WeekBody>(updated).days[0]).toMatchObject({
+        mentor: null,
+        durationMinutes: 120,
+      });
+    });
+
+    it('400 на длительность вне границ и на не-целое число минут', async () => {
+      const token = await actor(ALL);
+      const { groupId, mentorId } = setupWithMentor();
+
+      for (const durationMinutes of [0, -30, 2000, 90.5]) {
+        await post(`${journalUrl(groupId)}/weeks`, token, {
+          startDate: '2026-09-07',
+          days: [{ date: '2026-09-07', mentorId, durationMinutes }],
+        }).expect(400);
+      }
+    });
+
+    it('ведущий проверяется до записи: ни один день не заводится', async () => {
+      const token = await actor(ALL);
+      const { groupId, mentorId } = setupWithMentor();
+      const outsider = store.addEmployee(randomUUID(), 'Чужой', 'Сотрудник');
+
+      await post(`${journalUrl(groupId)}/weeks`, token, {
+        startDate: '2026-09-07',
+        days: [
+          { date: '2026-09-07', mentorId, durationMinutes: 90 },
+          { date: '2026-09-09', mentorId: outsider.id, durationMinutes: 90 },
+        ],
+      }).expect(422);
+
+      expect(dataOf<unknown[]>(await get(journalUrl(groupId), token).expect(200))).toHaveLength(0);
     });
   });
 

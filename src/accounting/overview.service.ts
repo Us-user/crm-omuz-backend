@@ -50,10 +50,11 @@ export class OverviewService {
     const toExclusive = nextIsoMonth(period.to);
     const chargeFilter = { from: period.from, to: toExclusive };
 
-    const [charges, income, expenses, categories, groupFacts] = await Promise.all([
+    const [charges, income, expenses, salaries, categories, groupFacts] = await Promise.all([
       this.repository.aggregateCharges(chargeFilter),
       this.repository.findIncomeFacts(period.from, toExclusive),
       this.repository.findExpenseFacts(period.from, toExclusive),
+      this.repository.findSalaryFacts(period.from, toExclusive),
       this.repository.findCategoryNodes(),
       this.repository.findGroupChargeFacts(chargeFilter),
     ]);
@@ -64,6 +65,7 @@ export class OverviewService {
 
     const incomeCents = sum(income.map(({ cents }) => cents));
     const expenseCents = sum(expenses.map(({ cents }) => cents));
+    const salaryCents = sum(salaries.map(({ cents }) => cents));
 
     return {
       period: {
@@ -74,10 +76,11 @@ export class OverviewService {
       charges: totalsOf(charges.chargedCents, charges.paidCents),
       income: fromCents(incomeCents),
       expense: fromCents(expenseCents),
+      salary: fromCents(salaryCents),
       // Разность считается в тыйинах и переводится один раз: вычитание
       // округлённых сомони разошлось бы со столбцами графика на копейки.
-      net: fromCents(incomeCents - expenseCents),
-      byMonth: monthlyMoney(months, income, expenses),
+      net: fromCents(incomeCents - expenseCents - salaryCents),
+      byMonth: monthlyMoney(months, income, expenses, salaries),
       byCategory: summarizeCategories(
         expenses,
         new Map(categories.map((category) => [category.id, category])),

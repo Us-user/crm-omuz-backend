@@ -499,7 +499,7 @@ describe('PaymentsService', () => {
         description: null,
         status: DirectoryStatus.INACTIVE,
         createdAt: new Date(),
-        _count: { transactions: 3 },
+        _count: { transactions: 3, salaryTransactions: 0 },
       });
 
       await expect(

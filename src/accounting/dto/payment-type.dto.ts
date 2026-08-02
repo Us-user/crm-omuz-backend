@@ -37,6 +37,14 @@ export class PaymentTypeDto {
   })
   transactionsCount!: number;
 
+  @ApiProperty({
+    example: 4,
+    description:
+      'Сколько выплат зарплаты проведено этим способом (ТЗ 5.16). Справочник общий ' +
+      'для прихода и расхода, поэтому удалению мешают оба потока.',
+  })
+  salaryTransactionsCount!: number;
+
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
 }

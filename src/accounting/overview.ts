@@ -41,17 +41,26 @@ export interface MonthMoney {
   month: string;
   /** Принятые за месяц деньги, включая предоплаты. */
   income: number;
+  /** Расходы центра — **без зарплаты**: она стоит своим столбцом. */
   expense: number;
-  /** `income − expense`. Может быть отрицательным — это законный ответ. */
+  /** Выплаченная за месяц зарплата (ТЗ 5.16), по дню выплаты. */
+  salary: number;
+  /** `income − expense − salary`. Может быть отрицательным — это законный ответ. */
   net: number;
 }
 
 /**
- * Раскладка прихода и расхода по месяцам ряда.
+ * Раскладка прихода, расхода и зарплаты по месяцам ряда.
  *
  * Ряд задаётся снаружи (`monthSequence`), а не данными: месяц без единой
  * операции обязан остаться в графике нулём, иначе расстояние между столбцами
  * перестаёт быть временем (правило 0025).
+ *
+ * Зарплата идёт **третьим слагаемым, а не частью `expense`** (решение
+ * пользователя, 0032): выплата не заводит строку `Expense`, потому что деньги
+ * уже записаны в `SalaryTransaction`, и вторая копия того же числа требовала бы
+ * снятия при каждой отмене выплаты. Поэтому `Net = Income − Expense − Salary`,
+ * а самая крупная статья центра видна отдельно, а не растворена в прочих.
  *
  * Факт вне ряда молча отбрасывается — выборка ограничена теми же границами,
  * и заводить столбец, которого нет в оси, значило бы показывать период шире
@@ -61,21 +70,25 @@ export function monthlyMoney(
   months: readonly string[],
   income: readonly MoneyFact[],
   expense: readonly MoneyFact[],
+  salary: readonly MoneyFact[] = [],
 ): MonthMoney[] {
   const incomeByMonth = sumByMonth(months, income);
   const expenseByMonth = sumByMonth(months, expense);
+  const salaryByMonth = sumByMonth(months, salary);
 
   return months.map((month) => {
     const incomeCents = incomeByMonth.get(month) ?? 0;
     const expenseCents = expenseByMonth.get(month) ?? 0;
+    const salaryCents = salaryByMonth.get(month) ?? 0;
 
     return {
       month,
       income: fromCents(incomeCents),
       expense: fromCents(expenseCents),
+      salary: fromCents(salaryCents),
       // Вычитание идёт в тыйинах и только потом переводится в сомони:
       // разность округлённых сомони разошлась бы со столбцами на копейки.
-      net: fromCents(incomeCents - expenseCents),
+      net: fromCents(incomeCents - expenseCents - salaryCents),
     };
   });
 }

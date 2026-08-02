@@ -9,6 +9,7 @@ import {
   DirectoryStatus,
   GroupStatus,
   Prisma,
+  SalaryStatus,
   StudentStatus,
 } from '@prisma/client';
 import request from 'supertest';
@@ -32,9 +33,17 @@ import type {
   ExpenseListParams,
   ExpenseRow,
   ExpenseUpdateInput,
+  MonthLevel,
   PaymentTypeListParams,
   PaymentTypeRow,
   PaymentTypeWriteInput,
+  SalaryConfirmInput,
+  SalaryFilter,
+  SalaryListParams,
+  SalaryRow,
+  SalaryTransactionInput,
+  SalaryTransactionRow,
+  SalaryUpdateInput,
   StudentProfile,
   TransactionInput,
   TransactionListParams,
@@ -49,11 +58,13 @@ import type {
   GroupRef,
   MoneyFact,
 } from 'src/accounting/overview';
+import { SalarySortField } from 'src/accounting/dto';
+import type { SalaryDayFact } from 'src/accounting/salary';
 import { AuthModule } from 'src/auth/auth.module';
 import { AuthRepository } from 'src/auth/auth.repository';
 import { TokenService } from 'src/auth/token.service';
 import { configureApp } from 'src/bootstrap';
-import { AllExceptionsFilter, TransformResponseInterceptor } from 'src/common';
+import { AllExceptionsFilter, SortOrder, TransformResponseInterceptor } from 'src/common';
 import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
@@ -184,7 +195,74 @@ interface StoredBudget {
   periodFrom: Date;
   periodTo: Date;
   status: BudgetStatus;
+  /** Фонд оплаты труда; `null` — не планировали (0032). */
+  salaryAllocatedCents: number | null;
   lines: StoredBudgetLine[];
+  createdAt: Date;
+}
+
+/** Профиль сотрудника — строка ведомости зарплат подписывается им. */
+interface StoredEmployeeProfile {
+  id: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  branchId: string | null;
+  status: string;
+}
+
+/**
+ * Учебный день журнала: **источник часов зарплаты** (ТЗ 5.16, решение 0032).
+ * Хранилище держит его здесь, потому что ведомость обязана считаться по тем же
+ * дням, которые видит журнал, — иначе тест проверял бы согласованность двух
+ * наборов чисел, а не поведение модуля.
+ */
+interface StoredTaughtDay {
+  mentorId: string;
+  date: Date;
+  minutes: number | null;
+  groupId: string | null;
+}
+
+/** Уровень ментора в месяце — из него берётся часовая ставка (0021). */
+interface StoredMonthLevel {
+  employeeId: string;
+  month: Date;
+  levelId: string;
+  levelName: string;
+  hourlyRateCents: number;
+}
+
+/** Одобренная заявка на аванс — «Prepaid» месяца (0022, 0031). */
+interface StoredApprovedAvans {
+  employeeId: string;
+  month: Date;
+  amountCents: number;
+}
+
+interface StoredSalary {
+  id: string;
+  employeeId: string;
+  month: Date;
+  bonusCents: number;
+  note: string | null;
+  status: SalaryStatus;
+  minutes: number | null;
+  hourlyRateCents: number | null;
+  totalCents: number | null;
+  confirmedAt: Date | null;
+  confirmedById: string | null;
+  createdById: string | null;
+  createdAt: Date;
+}
+
+interface StoredSalaryTransaction {
+  id: string;
+  salaryId: string;
+  amountCents: number;
+  paidAt: Date;
+  typeId: string;
+  comment: string | null;
   createdAt: Date;
 }
 
@@ -211,6 +289,12 @@ class InMemoryStore {
   private readonly budgets = new Map<string, StoredBudget>();
   private readonly branches = new Map<string, string>([['branch-1', 'Sadbarg']]);
   private readonly employees = new Map<string, string>();
+  private readonly employeeProfiles = new Map<string, StoredEmployeeProfile>();
+  private readonly taughtDays: StoredTaughtDay[] = [];
+  private readonly monthLevels: StoredMonthLevel[] = [];
+  private readonly approvedAvans: StoredApprovedAvans[] = [];
+  private readonly salaries = new Map<string, StoredSalary>();
+  private readonly salaryTransactions = new Map<string, StoredSalaryTransaction>();
 
   // ─────────────────────────── Засев данных ────────────────────────────────
 
@@ -253,8 +337,83 @@ class InMemoryStore {
   addEmployee(accountId: string): string {
     const id = randomUUID();
     this.employees.set(accountId, id);
+    this.employeeProfiles.set(id, {
+      id,
+      firstName: 'Аниса',
+      lastName: 'Рахматова',
+      phone: `+99298${String(this.employeeProfiles.size).padStart(7, '0')}`,
+      branchId: 'branch-1',
+      status: 'ACTIVE',
+    });
 
     return id;
+  }
+
+  /** Профиль сотрудника без аккаунта — тот, кому считают зарплату. */
+  seedEmployee(overrides: Partial<StoredEmployeeProfile> = {}): string {
+    const id = overrides.id ?? randomUUID();
+    this.employeeProfiles.set(id, {
+      firstName: 'Фаррух',
+      lastName: 'Раҳимов',
+      phone: `+99290${String(this.employeeProfiles.size).padStart(7, '0')}`,
+      branchId: 'branch-1',
+      status: 'ACTIVE',
+      ...overrides,
+      id,
+    });
+
+    return id;
+  }
+
+  /** Проведённое занятие в журнале — из него складываются часы месяца. */
+  seedTaughtDay(mentorId: string, iso: string, minutes: number | null, groupId?: string): void {
+    this.taughtDays.push({
+      mentorId,
+      date: new Date(`${iso}T00:00:00.000Z`),
+      minutes,
+      groupId: groupId ?? null,
+    });
+  }
+
+  /** Уровень ментора на месяц: месяца без записи не бывает «по умолчанию» (0021). */
+  seedMonthLevel(employeeId: string, month: string, hourlyRate: number, name = 'Senior'): string {
+    const levelId = randomUUID();
+    this.monthLevels.push({
+      employeeId,
+      month: new Date(`${month}-01T00:00:00.000Z`),
+      levelId,
+      levelName: name,
+      hourlyRateCents: Math.round(hourlyRate * 100),
+    });
+
+    return levelId;
+  }
+
+  seedApprovedAvans(employeeId: string, month: string, amount: number): void {
+    this.approvedAvans.push({
+      employeeId,
+      month: new Date(`${month}-01T00:00:00.000Z`),
+      amountCents: Math.round(amount * 100),
+    });
+  }
+
+  salaryCount(): number {
+    return this.salaries.size;
+  }
+
+  salaryTransactionCount(): number {
+    return this.salaryTransactions.size;
+  }
+
+  storedSalaryStatus(id: string): SalaryStatus | undefined {
+    return this.salaries.get(id)?.status;
+  }
+
+  /** Замороженный итог: им проверяется, что снимок не пересчитывается. */
+  storedSalaryTotal(id: string): number | null {
+    const total = this.salaries.get(id)?.totalCents;
+
+    return total === null || total === undefined ? null : total / 100;
   }
 
   seedType(overrides: Partial<StoredType> = {}): string {
@@ -389,6 +548,9 @@ class InMemoryStore {
       _count: {
         transactions: [...this.transactions.values()].filter(
           (transaction) => transaction.typeId === type.id,
+        ).length,
+        salaryTransactions: [...this.salaryTransactions.values()].filter(
+          (payment) => payment.typeId === type.id,
         ).length,
       },
     };
@@ -875,6 +1037,7 @@ class InMemoryStore {
       periodFrom: input.periodFrom,
       periodTo: input.periodTo,
       status: input.status ?? BudgetStatus.DRAFT,
+      salaryAllocatedCents: input.salaryAllocatedCents,
       lines: input.lines.map((line) => ({ id: randomUUID(), ...line })),
       createdAt: new Date(),
     });
@@ -890,6 +1053,9 @@ class InMemoryStore {
     if (input.periodFrom !== undefined) budget.periodFrom = input.periodFrom;
     if (input.periodTo !== undefined) budget.periodTo = input.periodTo;
     if (input.status !== undefined) budget.status = input.status;
+    if (input.salaryAllocatedCents !== undefined) {
+      budget.salaryAllocatedCents = input.salaryAllocatedCents;
+    }
     // Набор строк заменяется целиком — как `deleteMany` + `createMany` в БД.
     if (input.lines !== undefined) {
       budget.lines = input.lines.map((line) => ({ id: randomUUID(), ...line }));
@@ -962,6 +1128,10 @@ class InMemoryStore {
       periodFrom: budget.periodFrom,
       periodTo: budget.periodTo,
       status: budget.status,
+      salaryAllocated:
+        budget.salaryAllocatedCents === null
+          ? null
+          : new Prisma.Decimal(money(budget.salaryAllocatedCents)),
       createdAt: budget.createdAt,
       createdBy: null,
       lines: budget.lines
@@ -983,6 +1153,388 @@ class InMemoryStore {
           };
         })
         .sort((a, b) => a.category.name.localeCompare(b.category.name)),
+    };
+  }
+
+  // ────────────────────────────── Зарплата ─────────────────────────────────
+  //
+  // Хранилище **повторяет правила репозитория**: часы складываются из дней
+  // журнала, ставка ищется по точному месяцу (предыдущий не тянется, 0021),
+  // «Prepaid» берётся только из одобренных заявок, а подтверждение пишет три
+  // колонки снимка вместе — ровно то, что делает БД.
+
+  findManySalaries(params: SalaryListParams): Promise<{ rows: SalaryRow[]; total: number }> {
+    const rows = this.matchSalaries(params).sort((a, b) => {
+      const left = this.employeeProfiles.get(a.employeeId);
+      const right = this.employeeProfiles.get(b.employeeId);
+
+      const asc =
+        params.sort === SalarySortField.Total
+          ? (a.totalCents ?? 0) - (b.totalCents ?? 0)
+          : params.sort === SalarySortField.CreatedAt
+            ? a.createdAt.getTime() - b.createdAt.getTime()
+            : (left?.lastName ?? '').localeCompare(right?.lastName ?? '', 'ru');
+
+      return (params.order === SortOrder.Asc ? asc : -asc) || a.id.localeCompare(b.id);
+    });
+
+    return Promise.resolve({
+      rows: rows.slice(params.skip, params.skip + params.take).map((row) => this.salaryRow(row)),
+      total: rows.length,
+    });
+  }
+
+  findSalarySetRows(filter: SalaryFilter): Promise<
+    {
+      id: string;
+      employeeId: string;
+      bonus: Prisma.Decimal;
+      status: SalaryStatus;
+      minutes: number | null;
+      hourlyRate: Prisma.Decimal | null;
+      total: Prisma.Decimal | null;
+    }[]
+  > {
+    return Promise.resolve(
+      this.matchSalaries(filter).map((row) => ({
+        id: row.id,
+        employeeId: row.employeeId,
+        bonus: new Prisma.Decimal(money(row.bonusCents)),
+        status: row.status,
+        minutes: row.minutes,
+        hourlyRate:
+          row.hourlyRateCents === null ? null : new Prisma.Decimal(money(row.hourlyRateCents)),
+        total: row.totalCents === null ? null : new Prisma.Decimal(money(row.totalCents)),
+      })),
+    );
+  }
+
+  findSalaryById(id: string): Promise<SalaryRow | null> {
+    const row = this.salaries.get(id);
+
+    return Promise.resolve(row === undefined ? null : this.salaryRow(row));
+  }
+
+  findTaughtMinutes(from: Date, to: Date, employeeIds: string[]): Promise<Map<string, number>> {
+    const minutes = new Map<string, number>();
+
+    for (const day of this.taughtDays) {
+      if (!employeeIds.includes(day.mentorId)) continue;
+      if (day.date < from || day.date >= to) continue;
+
+      minutes.set(day.mentorId, (minutes.get(day.mentorId) ?? 0) + (day.minutes ?? 0));
+    }
+
+    return Promise.resolve(minutes);
+  }
+
+  findMonthLevels(month: Date, employeeIds: string[]): Promise<Map<string, MonthLevel>> {
+    const levels = new Map<string, MonthLevel>();
+
+    for (const level of this.monthLevels) {
+      if (!employeeIds.includes(level.employeeId)) continue;
+      // Точное равенство месяца: ближайший предыдущий не тянется (0021).
+      if (level.month.getTime() !== month.getTime()) continue;
+
+      levels.set(level.employeeId, {
+        employeeId: level.employeeId,
+        levelId: level.levelId,
+        levelName: level.levelName,
+        hourlyRateCents: level.hourlyRateCents,
+      });
+    }
+
+    return Promise.resolve(levels);
+  }
+
+  findApprovedAvansTotals(month: Date, employeeIds: string[]): Promise<Map<string, number>> {
+    const totals = new Map<string, number>();
+
+    for (const avans of this.approvedAvans) {
+      if (!employeeIds.includes(avans.employeeId)) continue;
+      if (avans.month.getTime() !== month.getTime()) continue;
+
+      totals.set(avans.employeeId, (totals.get(avans.employeeId) ?? 0) + avans.amountCents);
+    }
+
+    return Promise.resolve(totals);
+  }
+
+  findSalaryPaidTotals(salaryIds: string[]): Promise<Map<string, number>> {
+    const totals = new Map<string, number>();
+
+    for (const payment of this.salaryTransactions.values()) {
+      if (!salaryIds.includes(payment.salaryId)) continue;
+      totals.set(payment.salaryId, (totals.get(payment.salaryId) ?? 0) + payment.amountCents);
+    }
+
+    return Promise.resolve(totals);
+  }
+
+  findTaughtDays(from: Date, to: Date, mentorId: string): Promise<SalaryDayFact[]> {
+    return Promise.resolve(
+      this.taughtDays
+        .filter((day) => day.mentorId === mentorId && day.date >= from && day.date < to)
+        .map((day) => ({
+          date: day.date,
+          minutes: day.minutes ?? 0,
+          group:
+            day.groupId === null
+              ? null
+              : { id: day.groupId, name: this.groups.get(day.groupId)?.name ?? '—' },
+        })),
+    );
+  }
+
+  findSalaryCandidates(from: Date, to: Date, employeeId?: string): Promise<string[]> {
+    const ids = new Set<string>();
+
+    for (const day of this.taughtDays) {
+      if (day.date < from || day.date >= to) continue;
+      if (employeeId !== undefined && day.mentorId !== employeeId) continue;
+      ids.add(day.mentorId);
+    }
+
+    for (const avans of this.approvedAvans) {
+      if (avans.month.getTime() !== from.getTime()) continue;
+      if (employeeId !== undefined && avans.employeeId !== employeeId) continue;
+      ids.add(avans.employeeId);
+    }
+
+    return Promise.resolve([...ids]);
+  }
+
+  createSalaries(month: Date, employeeIds: string[], createdById: string | null): Promise<number> {
+    let created = 0;
+
+    for (const employeeId of employeeIds) {
+      // Уникальный `(employeeId, month)` — на нём держится идемпотентность.
+      const twin = [...this.salaries.values()].find(
+        (row) => row.employeeId === employeeId && row.month.getTime() === month.getTime(),
+      );
+      if (twin !== undefined) continue;
+
+      const id = randomUUID();
+      this.salaries.set(id, {
+        id,
+        employeeId,
+        month,
+        bonusCents: 0,
+        note: null,
+        status: SalaryStatus.DRAFT,
+        minutes: null,
+        hourlyRateCents: null,
+        totalCents: null,
+        confirmedAt: null,
+        confirmedById: null,
+        createdById,
+        createdAt: new Date(),
+      });
+      created += 1;
+    }
+
+    return Promise.resolve(created);
+  }
+
+  updateSalary(id: string, input: SalaryUpdateInput): Promise<SalaryRow> {
+    const row = this.salaries.get(id) as StoredSalary;
+
+    if (input.bonusCents !== undefined) row.bonusCents = input.bonusCents;
+    if (input.note !== undefined) row.note = input.note;
+
+    return Promise.resolve(this.salaryRow(row));
+  }
+
+  confirmSalary(id: string, input: SalaryConfirmInput): Promise<SalaryRow> {
+    const row = this.salaries.get(id) as StoredSalary;
+
+    row.status = SalaryStatus.DONE;
+    row.minutes = input.minutes;
+    row.hourlyRateCents = input.hourlyRateCents;
+    row.totalCents = input.totalCents;
+    row.confirmedAt = input.confirmedAt;
+    row.confirmedById = input.confirmedById;
+
+    return Promise.resolve(this.salaryRow(row));
+  }
+
+  unconfirmSalary(id: string): Promise<SalaryRow> {
+    const row = this.salaries.get(id) as StoredSalary;
+
+    row.status = SalaryStatus.DRAFT;
+    row.minutes = null;
+    row.hourlyRateCents = null;
+    row.totalCents = null;
+    row.confirmedAt = null;
+    row.confirmedById = null;
+
+    return Promise.resolve(this.salaryRow(row));
+  }
+
+  deleteSalary(id: string): Promise<void> {
+    this.salaries.delete(id);
+
+    return Promise.resolve();
+  }
+
+  findSalaryTransactions(salaryId: string): Promise<SalaryTransactionRow[]> {
+    return Promise.resolve(
+      [...this.salaryTransactions.values()]
+        .filter((payment) => payment.salaryId === salaryId)
+        .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+        .map((payment) => this.salaryTransactionRow(payment)),
+    );
+  }
+
+  countSalaryTransactions(salaryId: string): Promise<number> {
+    return Promise.resolve(
+      [...this.salaryTransactions.values()].filter((payment) => payment.salaryId === salaryId)
+        .length,
+    );
+  }
+
+  createSalaryTransaction(input: SalaryTransactionInput): Promise<SalaryTransactionRow> {
+    const id = randomUUID();
+    this.salaryTransactions.set(id, {
+      id,
+      salaryId: input.salaryId,
+      amountCents: input.amountCents,
+      paidAt: input.paidAt,
+      typeId: input.typeId,
+      comment: input.comment,
+      createdAt: new Date(),
+    });
+
+    return Promise.resolve(
+      this.salaryTransactionRow(this.salaryTransactions.get(id) as StoredSalaryTransaction),
+    );
+  }
+
+  findSalaryTransactionById(
+    id: string,
+  ): Promise<(SalaryTransactionRow & { salaryId: string }) | null> {
+    const payment = this.salaryTransactions.get(id);
+
+    return Promise.resolve(
+      payment === undefined
+        ? null
+        : { ...this.salaryTransactionRow(payment), salaryId: payment.salaryId },
+    );
+  }
+
+  deleteSalaryTransaction(id: string): Promise<void> {
+    this.salaryTransactions.delete(id);
+
+    return Promise.resolve();
+  }
+
+  findSalaryFacts(from: Date, to: Date): Promise<MoneyFact[]> {
+    return Promise.resolve(
+      [...this.salaryTransactions.values()]
+        .filter((payment) => payment.paidAt >= from && payment.paidAt < to)
+        .map((payment) => ({ at: payment.paidAt, cents: payment.amountCents })),
+    );
+  }
+
+  sumSalaryPaid(from: Date, to: Date): Promise<number> {
+    return Promise.resolve(
+      [...this.salaryTransactions.values()]
+        .filter((payment) => payment.paidAt >= from && payment.paidAt < to)
+        .reduce((total, payment) => total + payment.amountCents, 0),
+    );
+  }
+
+  findEmployeeById(
+    id: string,
+  ): Promise<{ id: string; firstName: string; lastName: string; status: string } | null> {
+    const employee = this.employeeProfiles.get(id);
+
+    return Promise.resolve(
+      employee === undefined
+        ? null
+        : {
+            id: employee.id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            status: employee.status,
+          },
+    );
+  }
+
+  private matchSalaries(filter: SalaryFilter): StoredSalary[] {
+    return [...this.salaries.values()].filter((row) => {
+      if (row.month.getTime() !== filter.month.getTime()) return false;
+      if (filter.status !== undefined && row.status !== filter.status) return false;
+      if (filter.employeeId !== undefined && row.employeeId !== filter.employeeId) return false;
+
+      const employee = this.employeeProfiles.get(row.employeeId);
+      if (filter.branchId !== undefined && employee?.branchId !== filter.branchId) return false;
+
+      if (filter.search !== undefined) {
+        const needle = filter.search.toLowerCase();
+        const haystack = [employee?.firstName, employee?.lastName, employee?.phone]
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(needle)) return false;
+      }
+
+      return true;
+    });
+  }
+
+  private salaryRow(row: StoredSalary): SalaryRow {
+    const employee = this.employeeProfiles.get(row.employeeId);
+
+    return {
+      id: row.id,
+      month: row.month,
+      bonus: new Prisma.Decimal(money(row.bonusCents)),
+      note: row.note,
+      status: row.status,
+      minutes: row.minutes,
+      hourlyRate:
+        row.hourlyRateCents === null ? null : new Prisma.Decimal(money(row.hourlyRateCents)),
+      total: row.totalCents === null ? null : new Prisma.Decimal(money(row.totalCents)),
+      confirmedAt: row.confirmedAt,
+      createdAt: row.createdAt,
+      employee: {
+        id: row.employeeId,
+        firstName: employee?.firstName ?? '—',
+        lastName: employee?.lastName ?? '—',
+        phone: employee?.phone ?? '—',
+        branch:
+          employee?.branchId == null
+            ? null
+            : { id: employee.branchId, name: this.branches.get(employee.branchId) ?? '—' },
+      },
+      confirmedBy: this.personOf(row.confirmedById),
+      createdBy: this.personOf(row.createdById),
+    };
+  }
+
+  private personOf(
+    employeeId: string | null,
+  ): { id: string; firstName: string; lastName: string } | null {
+    if (employeeId === null) return null;
+
+    const employee = this.employeeProfiles.get(employeeId);
+
+    return {
+      id: employeeId,
+      firstName: employee?.firstName ?? '—',
+      lastName: employee?.lastName ?? '—',
+    };
+  }
+
+  private salaryTransactionRow(row: StoredSalaryTransaction): SalaryTransactionRow {
+    return {
+      id: row.id,
+      amount: new Prisma.Decimal(money(row.amountCents)),
+      paidAt: row.paidAt,
+      comment: row.comment,
+      createdAt: row.createdAt,
+      type: { id: row.typeId, name: this.types.get(row.typeId)?.name ?? '—' },
+      createdBy: null,
     };
   }
 
@@ -2993,6 +3545,555 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
     });
   });
 
+  describe('Зарплата (ТЗ 5.16)', () => {
+    /** Тот, кто ведёт ведомость: планирование и расходы ему не нужны. */
+    const payroll = async () =>
+      (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManageSalary'])).token;
+
+    /**
+     * Ментор, который провёл занятия и получил уровень на месяц.
+     * Часы приходят из журнала, ставка — из уровня месяца (решение 0032).
+     */
+    const seedMentor = (
+      minutes: number[] = [90, 90],
+      hourlyRate: number | null = 27,
+      month = '2026-09',
+    ): string => {
+      const employeeId = store.seedEmployee();
+      const groupId = store.addGroup();
+
+      minutes.forEach((duration, index) => {
+        store.seedTaughtDay(employeeId, `${month}-0${String(index + 1)}`, duration, groupId);
+      });
+
+      if (hourlyRate !== null) store.seedMonthLevel(employeeId, month, hourlyRate);
+
+      return employeeId;
+    };
+
+    /** Сформировать ведомость настоящим маршрутом и вернуть единственную строку. */
+    const sheet = async (
+      token: string,
+      month = '2026-09',
+      employeeId?: string,
+    ): Promise<{ id: string; total: number; hours: number; remaining: number }> => {
+      const response = await send('post', '/api/v1/accounting/salary', token, {
+        month,
+        ...(employeeId === undefined ? {} : { employeeId }),
+      }).expect(201);
+
+      const { salaries } = dataOf<{
+        salaries: { id: string; total: number; hours: number; remaining: number }[];
+      }>(response);
+
+      return salaries[0];
+    };
+
+    it('«часы из журнала × ставка уровня месяца» — весь путь до числа', async () => {
+      const token = await payroll();
+      // Два занятия по 90 минут = 3 часа, ставка 27 TJS/ч → 81 TJS.
+      seedMentor([90, 90], 27);
+
+      const row = await sheet(token);
+
+      expect(row).toMatchObject({ hours: 3, total: 81, remaining: 81 });
+    });
+
+    it('занятие соседнего месяца в ведомость не попадает', async () => {
+      const token = await payroll();
+      const employeeId = seedMentor([90], 27);
+      store.seedTaughtDay(employeeId, '2026-08-31', 600);
+      store.seedTaughtDay(employeeId, '2026-10-01', 600);
+
+      const row = await sheet(token);
+
+      expect(row.hours).toBe(1.5);
+    });
+
+    it('день без записанной длительности виден нулём часов, а не пропадает', async () => {
+      const token = await payroll();
+      const employeeId = seedMentor([90], 27);
+      store.seedTaughtDay(employeeId, '2026-09-15', null);
+
+      const row = await sheet(token);
+      const card = dataOf<{ days: { date: string; hours: number }[] }>(
+        await get(`/api/v1/accounting/salary/${row.id}`, token).expect(200),
+      );
+
+      expect(row.hours).toBe(1.5);
+      expect(card.days).toHaveLength(2);
+      expect(card.days.find((day) => day.date === '2026-09-15')?.hours).toBe(0);
+    });
+
+    it('месяц без уровня ментора оставляет ставку null и не считает деньги', async () => {
+      const token = await payroll();
+      seedMentor([600], null);
+
+      const row = await sheet(token);
+
+      expect(row).toMatchObject({ hours: 10, total: 0 });
+      expect((row as unknown as { hourlyRate: number | null }).hourlyRate).toBeNull();
+    });
+
+    it('одобренный аванс становится Prepaid и уменьшает остаток', async () => {
+      const token = await payroll();
+      const employeeId = seedMentor([600], 27);
+      store.seedApprovedAvans(employeeId, '2026-09', 100);
+
+      const row = await sheet(token);
+
+      expect(row).toMatchObject({ total: 270, remaining: 170 });
+      expect((row as unknown as { prepaid: number }).prepaid).toBe(100);
+    });
+
+    it('аванс человеку без часов всё равно заводит строку расчёта', async () => {
+      const token = await payroll();
+      const employeeId = store.seedEmployee();
+      store.seedApprovedAvans(employeeId, '2026-09', 100);
+
+      const row = await sheet(token);
+
+      expect(row).toMatchObject({ hours: 0, total: 0, remaining: -100 });
+    });
+
+    it('повторное формирование второй строки не заводит', async () => {
+      const token = await payroll();
+      seedMentor();
+
+      await sheet(token);
+      const again = await send('post', '/api/v1/accounting/salary', token, {
+        month: '2026-09',
+      }).expect(201);
+
+      expect(dataOf<{ created: number; skipped: number }>(again)).toMatchObject({
+        created: 0,
+        skipped: 1,
+      });
+      expect(store.salaryCount()).toBe(1);
+    });
+
+    it('премия входит в Total, часы править нечем', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const row = await sheet(token);
+
+      const updated = dataOf<{ bonus: number; total: number }>(
+        await send('put', `/api/v1/accounting/salary/${row.id}`, token, { bonus: 30 }).expect(200),
+      );
+
+      expect(updated).toMatchObject({ bonus: 30, total: 300 });
+    });
+
+    it('подтверждение замораживает расчёт: правка журнала его больше не двигает', async () => {
+      const token = await payroll();
+      const employeeId = seedMentor([600], 27);
+      const row = await sheet(token);
+
+      const confirmed = dataOf<{ status: string; total: number }>(
+        await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200),
+      );
+      expect(confirmed).toMatchObject({ status: 'DONE', total: 270 });
+
+      // Журнал переписали задним числом — снимок обязан устоять.
+      store.seedTaughtDay(employeeId, '2026-09-20', 600);
+      const after = dataOf<{ total: number; hours: number }>(
+        await get(`/api/v1/accounting/salary/${row.id}`, token).expect(200),
+      );
+
+      expect(after).toMatchObject({ total: 270, hours: 10 });
+      expect(store.storedSalaryTotal(row.id)).toBe(270);
+    });
+
+    it('422 на подтверждение при часах без уровня месяца — расчёт остаётся черновиком', async () => {
+      const token = await payroll();
+      seedMentor([600], null);
+      const row = await sheet(token);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(422);
+      expect(store.storedSalaryStatus(row.id)).toBe('DRAFT');
+    });
+
+    it('409 на повторное подтверждение', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const row = await sheet(token);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(409);
+    });
+
+    it('422 на правку подтверждённого → снял подтверждение → правится снова', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const row = await sheet(token);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+      await send('put', `/api/v1/accounting/salary/${row.id}`, token, { bonus: 50 }).expect(422);
+
+      await send('delete', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+      await send('put', `/api/v1/accounting/salary/${row.id}`, token, { bonus: 50 }).expect(200);
+    });
+
+    it('весь круг выплаты: подтвердили → выплатили часть → остаток уменьшился', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType({ name: 'Наличные' });
+      const row = await sheet(token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 200,
+        typeId,
+        paidAt: '2026-10-05',
+      }).expect(201);
+
+      const after = dataOf<{ paid: number; remaining: number }>(
+        await get(`/api/v1/accounting/salary/${row.id}`, token).expect(200),
+      );
+
+      expect(after).toMatchObject({ paid: 200, remaining: 70 });
+    });
+
+    it('422 на выплату по черновику: его сумма ещё меняется', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 10,
+        typeId,
+      }).expect(422);
+      expect(store.salaryTransactionCount()).toBe(0);
+    });
+
+    it('422 на выплату больше остатка — выплата не заведена', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 300,
+        typeId,
+      }).expect(422);
+      expect(store.salaryTransactionCount()).toBe(0);
+    });
+
+    it('аванс уменьшает потолок выплаты', async () => {
+      const token = await payroll();
+      const employeeId = seedMentor([600], 27);
+      store.seedApprovedAvans(employeeId, '2026-09', 250);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+
+      // Total 270, Prepaid 250 → к выплате остаётся 20.
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 30,
+        typeId,
+      }).expect(422);
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 20,
+        typeId,
+      }).expect(201);
+    });
+
+    it('409 на снятие подтверждения при выплатах → отменил выплату → снялось', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+
+      const payment = dataOf<{ id: string }>(
+        await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+          amount: 100,
+          typeId,
+        }).expect(201),
+      );
+
+      await send('delete', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(409);
+
+      await send('delete', `/api/v1/accounting/salary/transactions/${payment.id}`, token, {
+        reason: 'Выплата проведена дважды',
+      }).expect(200);
+      await send('delete', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+    });
+
+    it('отмена выплаты требует причины', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+      const payment = dataOf<{ id: string }>(
+        await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+          amount: 100,
+          typeId,
+        }).expect(201),
+      );
+
+      await send(
+        'delete',
+        `/api/v1/accounting/salary/transactions/${payment.id}`,
+        token,
+        {},
+      ).expect(400);
+      expect(store.salaryTransactionCount()).toBe(1);
+    });
+
+    it('маршрут transactions не путается с карточкой расчёта', async () => {
+      const token = await payroll();
+
+      // Ниже `:id` он уехал бы в параметр и вернул 400 от ParseUUIDPipe.
+      await send('delete', `/api/v1/accounting/salary/transactions/${randomUUID()}`, token, {
+        reason: 'Ошибка',
+      }).expect(404);
+    });
+
+    it('422 на удаление подтверждённого, 409 на расчёт с выплатами', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(200);
+      await send('delete', `/api/v1/accounting/salary/${row.id}`, token).expect(422);
+
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token, {
+        amount: 100,
+        typeId,
+      }).expect(201);
+      await send('delete', `/api/v1/accounting/salary/${row.id}/confirm`, token).expect(409);
+    });
+
+    it('черновик удаляется', async () => {
+      const token = await payroll();
+      seedMentor();
+      const row = await sheet(token);
+
+      await send('delete', `/api/v1/accounting/salary/${row.id}`, token).expect(200);
+      expect(store.salaryCount()).toBe(0);
+    });
+
+    it('итоги ведомости считаются по всему набору и уходят в meta', async () => {
+      const token = await payroll();
+      seedMentor([600], 27);
+      seedMentor([300], 27);
+
+      await sheet(token);
+      const response = await get('/api/v1/accounting/salary?month=2026-09&limit=1', token).expect(
+        200,
+      );
+
+      expect(metaOf<{ totals: { count: number; total: number } }>(response).totals).toMatchObject({
+        count: 2,
+        total: 405,
+      });
+    });
+
+    it('фильтр по сотруднику и поиск по фамилии сужают ведомость', async () => {
+      const token = await payroll();
+      const first = seedMentor([600], 27);
+      seedMentor([300], 27);
+      await sheet(token);
+
+      const byEmployee = await get(
+        `/api/v1/accounting/salary?month=2026-09&employeeId=${first}`,
+        token,
+      ).expect(200);
+      expect(dataOf<unknown[]>(byEmployee)).toHaveLength(1);
+
+      const bySearch = await get(
+        '/api/v1/accounting/salary?month=2026-09&search=Раҳимов',
+        token,
+      ).expect(200);
+      expect(dataOf<unknown[]>(bySearch)).toHaveLength(2);
+    });
+
+    it('выплата зарплаты видна в обзоре отдельным числом и уменьшает Net', async () => {
+      const token = await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManageSalary',
+      ]);
+      seedMentor([600], 27);
+      const typeId = store.seedType();
+      const row = await sheet(token.token);
+      await send('post', `/api/v1/accounting/salary/${row.id}/confirm`, token.token).expect(200);
+      await send('post', `/api/v1/accounting/salary/${row.id}/pay`, token.token, {
+        amount: 200,
+        typeId,
+        paidAt: '2026-10-05',
+      }).expect(201);
+
+      const overview = dataOf<{ expense: number; salary: number; net: number }>(
+        await get('/api/v1/accounting/overview?from=2026-10&to=2026-10', token.token).expect(200),
+      );
+
+      // Зарплата не растворяется в `expense`: у неё свой источник (решение 0032).
+      expect(overview).toMatchObject({ expense: 0, salary: 200, net: -200 });
+    });
+
+    it('право на просмотр не даёт вести ведомость', async () => {
+      const token = await viewer();
+
+      await send('post', '/api/v1/accounting/salary', token, { month: '2026-09' }).expect(403);
+      await get('/api/v1/accounting/salary?month=2026-09', token).expect(200);
+    });
+
+    it('право на оплаты студентов зарплату не открывает', async () => {
+      const token = await cashier();
+
+      await send('post', '/api/v1/accounting/salary', token, { month: '2026-09' }).expect(403);
+    });
+
+    it('403 студенту и сотруднику без прав', async () => {
+      await get('/api/v1/accounting/salary', await studentToken()).expect(403);
+      await get('/api/v1/accounting/salary', (await actor([])).token).expect(403);
+    });
+
+    it('400 на негодный месяц и негодное тело', async () => {
+      const token = await payroll();
+
+      await get('/api/v1/accounting/salary?month=2026-13', token).expect(400);
+      await send('post', '/api/v1/accounting/salary', token, { month: '2026-9' }).expect(400);
+      await send('post', '/api/v1/accounting/salary', token, {}).expect(400);
+      expect(store.salaryCount()).toBe(0);
+    });
+
+    it('422 на несуществующего сотрудника в теле формирования', async () => {
+      const token = await payroll();
+
+      await send('post', '/api/v1/accounting/salary', token, {
+        month: '2026-09',
+        employeeId: randomUUID(),
+      }).expect(422);
+    });
+  });
+
+  describe('Бюджет: фонд оплаты труда (ТЗ 5.16)', () => {
+    const payroll = async () =>
+      (
+        await actor([
+          'Permission.Accounting.Views',
+          'Permission.Accounting.ManageBudget',
+          'Permission.Accounting.ManageSalary',
+        ])
+      ).token;
+
+    it('план фонда считается по выплатам периода и входит в итоги', async () => {
+      const token = await payroll();
+      const employeeId = store.seedEmployee();
+      store.seedTaughtDay(employeeId, '2026-09-01', 600, store.addGroup());
+      store.seedMonthLevel(employeeId, '2026-09', 27);
+      const typeId = store.seedType();
+
+      const row = (
+        await send('post', '/api/v1/accounting/salary', token, { month: '2026-09' }).expect(201)
+      ).body as { data: { salaries: { id: string }[] } };
+      const salaryId = row.data.salaries[0].id;
+
+      await send('post', `/api/v1/accounting/salary/${salaryId}/confirm`, token).expect(200);
+      await send('post', `/api/v1/accounting/salary/${salaryId}/pay`, token, {
+        amount: 200,
+        typeId,
+        paidAt: '2026-09-30',
+      }).expect(201);
+
+      const budget = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'План на сентябрь',
+          periodFrom: '2026-09',
+          periodTo: '2026-09',
+          salaryAllocated: 500,
+        }).expect(201),
+      );
+
+      const card = dataOf<{
+        salary: { allocated: number; spent: number; remaining: number };
+        totals: { allocated: number; spent: number };
+      }>(await get(`/api/v1/accounting/budget/${budget.id}`, token).expect(200));
+
+      expect(card.salary).toMatchObject({ allocated: 500, spent: 200, remaining: 300 });
+      expect(card.totals).toMatchObject({ allocated: 500, spent: 200 });
+    });
+
+    it('незапланированный фонд в итоги не входит, хотя выплаты были', async () => {
+      const token = await payroll();
+      const budget = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'План без зарплаты',
+          periodFrom: '2026-09',
+          periodTo: '2026-09',
+        }).expect(201),
+      );
+
+      const card = dataOf<{ salary: unknown; totals: { allocated: number } }>(
+        await get(`/api/v1/accounting/budget/${budget.id}`, token).expect(200),
+      );
+
+      expect(card.salary).toBeNull();
+      expect(card.totals.allocated).toBe(0);
+    });
+
+    it('выплата вне периода плана в его освоение не попадает', async () => {
+      const token = await payroll();
+      const employeeId = store.seedEmployee();
+      store.seedTaughtDay(employeeId, '2026-09-01', 600, store.addGroup());
+      store.seedMonthLevel(employeeId, '2026-09', 27);
+      const typeId = store.seedType();
+
+      const created = (
+        await send('post', '/api/v1/accounting/salary', token, { month: '2026-09' }).expect(201)
+      ).body as { data: { salaries: { id: string }[] } };
+      const salaryId = created.data.salaries[0].id;
+      await send('post', `/api/v1/accounting/salary/${salaryId}/confirm`, token).expect(200);
+      // Выплата в октябре — план сентября её не видит.
+      await send('post', `/api/v1/accounting/salary/${salaryId}/pay`, token, {
+        amount: 200,
+        typeId,
+        paidAt: '2026-10-05',
+      }).expect(201);
+
+      const budget = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'Только сентябрь',
+          periodFrom: '2026-09',
+          periodTo: '2026-09',
+          salaryAllocated: 500,
+        }).expect(201),
+      );
+
+      const card = dataOf<{ salary: { spent: number } }>(
+        await get(`/api/v1/accounting/budget/${budget.id}`, token).expect(200),
+      );
+
+      expect(card.salary.spent).toBe(0);
+    });
+
+    it('null снимает план фонда', async () => {
+      const token = await payroll();
+      const budget = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'План с зарплатой',
+          periodFrom: '2026-09',
+          periodTo: '2026-09',
+          salaryAllocated: 500,
+        }).expect(201),
+      );
+
+      const updated = dataOf<{ salary: unknown }>(
+        await send('put', `/api/v1/accounting/budget/${budget.id}`, token, {
+          salaryAllocated: null,
+        }).expect(200),
+      );
+
+      expect(updated.salary).toBeNull();
+    });
+  });
+
   describe('OpenAPI', () => {
     it('пути платёжного контура описаны, а у должников только чтение', () => {
       const document = buildOpenApiDocument(app) as unknown as {
@@ -3010,6 +4111,7 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
           '/api/v1/accounting/expenses',
           '/api/v1/accounting/expense-categories',
           '/api/v1/accounting/budget',
+          '/api/v1/accounting/salary',
           '/api/v1/accounting/overview',
         ]),
       );
@@ -3031,6 +4133,45 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
       // Витрина должников ничего не меняет: `POST /accounting/debtors`
       // из перечня ТЗ не заводится (решение сессии 0029).
       expect(Object.keys(document.paths['/api/v1/accounting/debtors'])).toEqual(['get']);
+
+      // Ведомость: чтение и «сформировать месяц».
+      expect(Object.keys(document.paths['/api/v1/accounting/salary']).sort()).toEqual([
+        'get',
+        'post',
+      ]);
+      // У расчёта нет `post` — подтверждение и выплата стоят своими путями.
+      expect(Object.keys(document.paths['/api/v1/accounting/salary/{id}']).sort()).toEqual([
+        'delete',
+        'get',
+        'put',
+      ]);
+      // Подтверждение снимается тем же путём, что ставится (сверх перечня ТЗ).
+      expect(Object.keys(document.paths['/api/v1/accounting/salary/{id}/confirm']).sort()).toEqual([
+        'delete',
+        'post',
+      ]);
+      expect(Object.keys(document.paths['/api/v1/accounting/salary/{id}/pay'])).toEqual(['post']);
+    });
+
+    it('формирование ведомости и выплата отвечают 201, подтверждение — 200', () => {
+      const document = buildOpenApiDocument(app) as unknown as {
+        paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+      };
+
+      expect(Object.keys(document.paths['/api/v1/accounting/salary'].post.responses)).toContain(
+        '201',
+      );
+      expect(
+        Object.keys(document.paths['/api/v1/accounting/salary/{id}/pay'].post.responses),
+      ).toContain('201');
+
+      // Подтверждение ничего не создаёт по адресу — 200, а не 201
+      // (то же правило, что у финализации недели, 0018, и импорта состава, 0013).
+      const confirm = Object.keys(
+        document.paths['/api/v1/accounting/salary/{id}/confirm'].post.responses,
+      );
+      expect(confirm).toContain('200');
+      expect(confirm).not.toContain('201');
     });
 
     it('начисление и предоплата отвечают 201, приём оплаты тоже', () => {

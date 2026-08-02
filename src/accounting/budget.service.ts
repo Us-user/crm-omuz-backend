@@ -109,6 +109,10 @@ export class BudgetService {
       periodFrom,
       periodTo,
       status: dto.status,
+      salaryAllocatedCents:
+        dto.salaryAllocated === undefined || dto.salaryAllocated === null
+          ? null
+          : toCents(dto.salaryAllocated),
       lines: await this.resolveLines(dto.lines ?? []),
       createdById: await this.employeeIdOf(accountId),
     });
@@ -147,6 +151,14 @@ export class BudgetService {
       periodFrom: dto.periodFrom === undefined ? undefined : periodFrom,
       periodTo: dto.periodTo === undefined ? undefined : periodTo,
       status: dto.status,
+      // `null` в теле снимает план фонда оплаты труда — тогда он перестаёт
+      // входить в итоги (правило «незапланированное в план не попадает»).
+      salaryAllocatedCents:
+        dto.salaryAllocated === undefined
+          ? undefined
+          : dto.salaryAllocated === null
+            ? null
+            : toCents(dto.salaryAllocated),
       lines: dto.lines === undefined ? undefined : await this.resolveLines(dto.lines),
     });
 
@@ -201,6 +213,13 @@ export class BudgetService {
     const childrenByParent = await this.repository.findChildIdsByParents(plannedIds);
 
     for (const window of windowsOf(rows)) {
+      // Освоение фонда оплаты труда считается по выплатам того же окна — так же,
+      // как `spent` статьи считается по расходам: зарплата не заводит `Expense`
+      // (решение 0032), поэтому у неё свой источник, а не своя строка расхода.
+      const salarySpentCents = window.budgets.some((row) => row.salaryAllocated !== null)
+        ? await this.repository.sumSalaryPaid(window.from, nextIsoMonth(window.to))
+        : 0;
+
       const categoryIds = [
         ...new Set(
           window.budgets.flatMap((row) =>
@@ -222,7 +241,13 @@ export class BudgetService {
       );
 
       for (const row of window.budgets) {
-        summaries.set(row.id, summarizeBudget(linesOf(row), spentByCategory, childrenByParent));
+        summaries.set(
+          row.id,
+          summarizeBudget(linesOf(row), spentByCategory, childrenByParent, {
+            allocatedCents: row.salaryAllocated === null ? null : toCents(row.salaryAllocated),
+            spentCents: salarySpentCents,
+          }),
+        );
       }
     }
 
@@ -388,6 +413,7 @@ const linesOf = (row: BudgetRow): BudgetLineFact[] =>
 /** Пустой свод для плана без строк — считать по нему нечего. */
 const EMPTY_SUMMARY: BudgetSummary = {
   lines: [],
+  salary: null,
   totals: { allocated: 0, spent: 0, remaining: 0, usage: null, overspent: false },
 };
 
@@ -403,6 +429,7 @@ const toRowDto = (row: BudgetRow, summary: BudgetSummary): BudgetDto => ({
   status: row.status,
   statusTitle: BUDGET_STATUS_TITLES[row.status],
   linesCount: row.lines.length,
+  salary: summary.salary,
   totals: summary.totals,
   createdBy: row.createdBy,
   createdAt: row.createdAt.toISOString(),

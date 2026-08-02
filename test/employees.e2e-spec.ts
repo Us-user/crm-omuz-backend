@@ -84,6 +84,8 @@ const NO_TRACE: WorkTrace = {
   submittedWeeks: 0,
   authoredFeedback: 0,
   awardedCoins: 0,
+  taughtDays: 0,
+  salaries: 0,
 };
 
 /**

@@ -12,10 +12,17 @@ import {
   LessonType as DayType,
 } from '@prisma/client';
 
-import { BusinessRuleException, formatIsoDate, Paginated, parseIsoDate } from '../common';
+import {
+  BusinessRuleException,
+  emptyToNullPatch,
+  formatIsoDate,
+  Paginated,
+  parseIsoDate,
+} from '../common';
 import { coinsForWeekSum } from '../student-coins/coin-award';
 import type {
   CreateJournalWeekDto,
+  JournalDayDto,
   JournalDayInputDto,
   JournalQueryDto,
   JournalRowDto,
@@ -140,7 +147,7 @@ export class GroupJournalService {
     const group = await this.requireGroup(groupId);
 
     const startDate = parseIsoDate(dto.startDate, 'startDate');
-    const days = this.readDays(dto.days, startDate);
+    const days = await this.readDays(groupId, dto.days, startDate);
 
     await this.assertDaysFree(groupId, days);
 
@@ -184,7 +191,8 @@ export class GroupJournalService {
     const startDate =
       dto.startDate === undefined ? week.startDate : parseIsoDate(dto.startDate, 'startDate');
 
-    const days = dto.days === undefined ? undefined : this.readDays(dto.days, startDate);
+    const days =
+      dto.days === undefined ? undefined : await this.readDays(groupId, dto.days, startDate);
     if (days !== undefined) {
       await this.assertDaysFree(groupId, days, weekId);
     } else if (dto.startDate !== undefined) {
@@ -431,12 +439,29 @@ export class GroupJournalService {
     return week;
   }
 
-  /** Разбор и проверка набора учебных дней: даты не повторяются и лежат внутри недели. */
-  private readDays(days: JournalDayInputDto[], startDate: Date): WeekDayInput[] {
+  /**
+   * Разбор и проверка набора учебных дней: даты не повторяются, лежат внутри
+   * недели, а ведущий — из менторов группы.
+   *
+   * Ведущий и длительность появились здесь вместе с зарплатой (ТЗ 5.16,
+   * решение 0032): часы считаются по **фактически проведённым** занятиям,
+   * а факт живёт в журнале, а не в расписании.
+   */
+  private async readDays(
+    groupId: string,
+    days: JournalDayInputDto[],
+    startDate: Date,
+  ): Promise<WeekDayInput[]> {
     const parsed = days.map((day) => ({
       date: parseIsoDate(day.date, 'days.date'),
       type: day.type ?? DayType.LECTURE,
+      // Пустая строка снимает ведущего — то же правило пустой строки, что
+      // у аудитории слота (0011) и филиала расхода (0030).
+      mentorId: day.mentorId === undefined ? null : (emptyToNullPatch(day.mentorId) ?? null),
+      durationMinutes: day.durationMinutes ?? null,
     }));
+
+    await this.assertMentorsOfGroup(groupId, parsed);
 
     const seen = new Set<number>();
     for (const day of parsed) {
@@ -476,6 +501,32 @@ export class GroupJournalService {
           },
         });
       }
+    }
+  }
+
+  /**
+   * Ведущий занятия — только из менторов группы (422), а не любой сотрудник.
+   *
+   * То же правило и тот же довод, что у слота расписания (0011): иначе
+   * «менторы группы» и «кто ведёт занятия» разошлись бы как два независимых
+   * списка, а по вторым считается зарплата (ТЗ 5.16). Проверка идёт одним
+   * запросом на весь набор дней, а не на день.
+   */
+  private async assertMentorsOfGroup(groupId: string, days: WeekDayInput[]): Promise<void> {
+    const named = [
+      ...new Set(days.flatMap((day) => (day.mentorId === null ? [] : [day.mentorId]))),
+    ];
+    if (named.length === 0) return;
+
+    const mentors = await this.repository.findGroupMentorIds(groupId);
+    const outsiders = named.filter((id) => !mentors.has(id));
+
+    if (outsiders.length > 0) {
+      throw new BusinessRuleException(
+        'Занятие может провести только ментор этой группы: назначьте сотрудника ' +
+          'через /groups/{id}/mentors',
+        { mentorIds: outsiders },
+      );
     }
   }
 
@@ -719,12 +770,27 @@ const toSummaryDto = (
   weekNumber: row.weekNumber,
   startDate: formatIsoDate(row.startDate),
   endDate: endDateOf(row),
-  days: row.days.map((day) => ({ id: day.id, date: formatIsoDate(day.date), type: day.type })),
+  days: row.days.map(toDayDto),
   submitted: row.submittedAt !== null,
   submittedAt: row.submittedAt === null ? null : row.submittedAt.toISOString(),
   submittedBy: row.submittedBy,
   studentsCount: aggregate?.studentsCount ?? 0,
   averageSum: roundAverage(aggregate?.averageSum ?? null),
+});
+
+/** День наружу: дата, тип и то, из чего считаются часы зарплаты (ТЗ 5.16). */
+const toDayDto = (day: {
+  id: string;
+  date: Date;
+  type: LessonType;
+  durationMinutes: number | null;
+  mentor: { id: string; firstName: string; lastName: string } | null;
+}): JournalDayDto => ({
+  id: day.id,
+  date: formatIsoDate(day.date),
+  type: day.type,
+  mentor: day.mentor,
+  durationMinutes: day.durationMinutes,
 });
 
 /** Неделя целиком со строками студентов. */
@@ -790,7 +856,7 @@ function buildWeekDto(
     weekNumber: week.weekNumber,
     startDate: formatIsoDate(week.startDate),
     endDate: endDateOf(week),
-    days: days.map((day) => ({ id: day.id, date: formatIsoDate(day.date), type: day.type })),
+    days: days.map(toDayDto),
     submitted: week.submittedAt !== null,
     submittedAt: week.submittedAt === null ? null : week.submittedAt.toISOString(),
     submittedBy: week.submittedBy,

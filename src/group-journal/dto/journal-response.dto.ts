@@ -11,6 +11,22 @@ export class JournalDayDto {
 
   @ApiProperty({ enum: LessonType })
   type!: LessonType;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: { id: 'uuid', firstName: 'Фаррух', lastName: 'Раҳимов' },
+    description:
+      'Кто фактически провёл занятие. `null` — не записали; тогда час этого дня ' +
+      'не попадёт ни в чью ведомость зарплаты (ТЗ 5.16).',
+  })
+  mentor!: { id: string; firstName: string; lastName: string } | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 90,
+    description: 'Длительность занятия в минутах; `null` — длительность не записана.',
+  })
+  durationMinutes!: number | null;
 }
 
 /** Сотрудник, финализировавший неделю (ТЗ 5.8: «Отправить результат»). */
