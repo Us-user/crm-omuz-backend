@@ -39,6 +39,7 @@ import { StudentFeedbackModule } from './student-feedback/student-feedback.modul
 import { StudentParentsModule } from './student-parents/student-parents.module';
 import { StudentsModule } from './students/students.module';
 import { SyllabusModule } from './syllabus/syllabus.module';
+import { TimetableModule } from './timetable/timetable.module';
 
 @Module({
   imports: [
@@ -78,6 +79,7 @@ import { SyllabusModule } from './syllabus/syllabus.module';
     GroupScheduleModule,
     GroupStudentsModule,
     SyllabusModule,
+    TimetableModule,
     HealthModule,
   ],
   providers: [
