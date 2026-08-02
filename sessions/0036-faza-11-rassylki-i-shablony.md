@@ -289,6 +289,22 @@ SQL сгенерирован `prisma migrate diff` из схемы, а не на
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30768449943`, коммит `53548f9`, зелёный за 3м14с):
+- `npm run lint` → `npm run typecheck` → `npm test` — 1889 тестов, 85 наборов;
+- `npx prisma migrate deploy` — применены все **двадцать шесть** миграций к реальному
+  PostgreSQL 16, включая новую `20260805000000_phase11_mailings`,
+  `All migrations have been successfully applied`;
+- `npm run test:e2e` целиком — **31 набор, 1185 тестов** (было 30 и 1140), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer +
+  **Messaging** + Auth + Rbac + Students + StudentAccess + StudentCabinet + StudentCoins +
+  StudentFeedback + StudentParents + Performance + Leaders + Leads + Coupons +
+  LeftCourses + Graduates + Employees + MentorCabinet + MentorLevels + Avans + Accounting +
+  Branches + Rooms + Courses + Groups + GroupJournal + GroupMentors + GroupSchedule +
+  GroupStudents + Syllabus + Timetable + Dashboard + **Mailings** + **MailingsWorker**)
+  против настоящих PostgreSQL и Redis. Это же единственная проверка того, что
+  **воркер BullMQ поднимается**: приложение с `MailingDeliveryProcessor` стартует
+  и подтверждает `database: up`. Задач ему при этом никто не кладёт — см. «не проверено».
+
 **НЕ проверено (честно):**
 - **Задача ни разу не прошла через настоящий Redis.** Это главный незакрытый риск сессии
   и прямое следствие её устройства: e2e подменяет диспетчер синхронным, а в CI
@@ -372,5 +388,8 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- `<хеш>` — «Фаза 11: рассылки, шаблоны и первая работающая очередь».
+- `53548f9` — «Фаза 11: рассылки, шаблоны и первая работающая очередь» (46 файлов).
+- На `53548f9` прогнан зелёный CI (run `30768449943`, 3м14с): lint → typecheck → unit →
+  `migrate deploy` → e2e.
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
