@@ -3,12 +3,23 @@ import { randomUUID } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { AccountType, DirectoryStatus, GroupStatus, StudentStatus } from '@prisma/client';
+import {
+  AccountType,
+  BudgetStatus,
+  DirectoryStatus,
+  GroupStatus,
+  Prisma,
+  StudentStatus,
+} from '@prisma/client';
 import request from 'supertest';
 
 import { AccountingModule } from 'src/accounting/accounting.module';
 import { ChargeStatus } from 'src/accounting/accounting';
 import type {
+  BudgetCreateInput,
+  BudgetListParams,
+  BudgetRow,
+  BudgetUpdateInput,
   ChargeFilter,
   ChargeInput,
   ChargeListParams,
@@ -159,6 +170,24 @@ interface StoredExpense {
   createdAt: Date;
 }
 
+interface StoredBudgetLine {
+  id: string;
+  categoryId: string;
+  allocatedCents: number;
+  note: string | null;
+}
+
+interface StoredBudget {
+  id: string;
+  name: string;
+  description: string | null;
+  periodFrom: Date;
+  periodTo: Date;
+  status: BudgetStatus;
+  lines: StoredBudgetLine[];
+  createdAt: Date;
+}
+
 const money = (cents: number): string => (cents / 100).toFixed(2);
 
 /**
@@ -179,6 +208,7 @@ class InMemoryStore {
   private readonly types = new Map<string, StoredType>();
   private readonly categories = new Map<string, StoredCategory>();
   private readonly expenses = new Map<string, StoredExpense>();
+  private readonly budgets = new Map<string, StoredBudget>();
   private readonly branches = new Map<string, string>([['branch-1', 'Sadbarg']]);
   private readonly employees = new Map<string, string>();
 
@@ -271,6 +301,15 @@ class InMemoryStore {
 
   expenseCount(): number {
     return this.expenses.size;
+  }
+
+  budgetCount(): number {
+    return this.budgets.size;
+  }
+
+  /** Строк плана в бюджете — ими проверяется замена набора целиком. */
+  budgetLineCount(budgetId: string): number {
+    return this.budgets.get(budgetId)?.lines.length ?? 0;
   }
 
   transactionCount(): number {
@@ -778,7 +817,172 @@ class InMemoryStore {
           .length,
         expenses: [...this.expenses.values()].filter((row) => row.categoryId === category.id)
           .length,
+        budgetLines: [...this.budgets.values()].filter((budget) =>
+          budget.lines.some((line) => line.categoryId === category.id),
+        ).length,
       },
+    };
+  }
+
+  // ─────────────────────────────── Бюджет ──────────────────────────────────
+
+  findManyBudgets(params: BudgetListParams): Promise<{ rows: BudgetRow[]; total: number }> {
+    // Пересечение отрезков — то же условие, что в репозитории: план попадает
+    // в отбор, если начался не позже конца периода и кончился не раньше начала.
+    const rows = [...this.budgets.values()]
+      .filter((budget) => params.status === undefined || budget.status === params.status)
+      .filter(
+        (budget) =>
+          params.categoryId === undefined ||
+          budget.lines.some((line) => line.categoryId === params.categoryId),
+      )
+      .filter((budget) => params.to === undefined || budget.periodFrom <= params.to)
+      .filter((budget) => params.from === undefined || budget.periodTo >= params.from)
+      .filter(
+        (budget) =>
+          params.search === undefined ||
+          budget.name.toLowerCase().includes(params.search.toLowerCase()) ||
+          (budget.description ?? '').toLowerCase().includes(params.search.toLowerCase()),
+      )
+      .sort((a, b) => b.periodFrom.getTime() - a.periodFrom.getTime() || a.id.localeCompare(b.id));
+
+    return Promise.resolve({
+      rows: rows.slice(params.skip, params.skip + params.take).map((row) => this.budgetRow(row)),
+      total: rows.length,
+    });
+  }
+
+  findBudgetById(id: string): Promise<BudgetRow | null> {
+    const budget = this.budgets.get(id);
+
+    return Promise.resolve(budget === undefined ? null : this.budgetRow(budget));
+  }
+
+  findBudgetByName(name: string): Promise<{ id: string; name: string } | null> {
+    const twin = [...this.budgets.values()].find(
+      (budget) => budget.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    return Promise.resolve(twin === undefined ? null : { id: twin.id, name: twin.name });
+  }
+
+  createBudget(input: BudgetCreateInput): Promise<BudgetRow> {
+    const id = randomUUID();
+    this.budgets.set(id, {
+      id,
+      name: input.name,
+      description: input.description,
+      periodFrom: input.periodFrom,
+      periodTo: input.periodTo,
+      status: input.status ?? BudgetStatus.DRAFT,
+      lines: input.lines.map((line) => ({ id: randomUUID(), ...line })),
+      createdAt: new Date(),
+    });
+
+    return Promise.resolve(this.budgetRow(this.budgets.get(id) as StoredBudget));
+  }
+
+  updateBudget(id: string, input: BudgetUpdateInput): Promise<BudgetRow> {
+    const budget = this.budgets.get(id) as StoredBudget;
+
+    if (input.name !== undefined) budget.name = input.name;
+    if (input.description !== undefined) budget.description = input.description;
+    if (input.periodFrom !== undefined) budget.periodFrom = input.periodFrom;
+    if (input.periodTo !== undefined) budget.periodTo = input.periodTo;
+    if (input.status !== undefined) budget.status = input.status;
+    // Набор строк заменяется целиком — как `deleteMany` + `createMany` в БД.
+    if (input.lines !== undefined) {
+      budget.lines = input.lines.map((line) => ({ id: randomUUID(), ...line }));
+    }
+
+    return Promise.resolve(this.budgetRow(budget));
+  }
+
+  deleteBudget(id: string): Promise<void> {
+    this.budgets.delete(id);
+
+    return Promise.resolve();
+  }
+
+  /** Агрегат расходов по статьям за окно — то же, что `groupBy` в БД. */
+  findExpenseTotalsByCategory(
+    from: Date,
+    to: Date,
+    categoryIds: string[],
+  ): Promise<Map<string, number>> {
+    const totals = new Map<string, number>();
+
+    for (const expense of this.expenses.values()) {
+      if (expense.spentAt < from || expense.spentAt >= to) continue;
+      if (!categoryIds.includes(expense.categoryId)) continue;
+
+      totals.set(expense.categoryId, (totals.get(expense.categoryId) ?? 0) + expense.amountCents);
+    }
+
+    return Promise.resolve(totals);
+  }
+
+  findChildIdsByParents(parentIds: string[]): Promise<Map<string, string[]>> {
+    const children = new Map<string, string[]>();
+
+    for (const category of this.categories.values()) {
+      if (category.parentId === null || !parentIds.includes(category.parentId)) continue;
+      children.set(category.parentId, [...(children.get(category.parentId) ?? []), category.id]);
+    }
+
+    return Promise.resolve(children);
+  }
+
+  findCategoriesByIds(
+    ids: string[],
+  ): Promise<{ id: string; name: string; status: DirectoryStatus; parentId: string | null }[]> {
+    return Promise.resolve(
+      ids.flatMap((id) => {
+        const category = this.categories.get(id);
+
+        return category === undefined
+          ? []
+          : [
+              {
+                id: category.id,
+                name: category.name,
+                status: category.status,
+                parentId: category.parentId,
+              },
+            ];
+      }),
+    );
+  }
+
+  private budgetRow(budget: StoredBudget): BudgetRow {
+    return {
+      id: budget.id,
+      name: budget.name,
+      description: budget.description,
+      periodFrom: budget.periodFrom,
+      periodTo: budget.periodTo,
+      status: budget.status,
+      createdAt: budget.createdAt,
+      createdBy: null,
+      lines: budget.lines
+        .map((line) => {
+          const category = this.categories.get(line.categoryId);
+          const parent = this.categories.get(category?.parentId ?? '');
+
+          return {
+            id: line.id,
+            // Настоящий `Decimal`, как отдала бы БД: строка сюда не подошла бы
+            // по типу, а сервис переводит значение в тыйины через `Number()`.
+            allocated: new Prisma.Decimal(money(line.allocatedCents)),
+            note: line.note,
+            category: {
+              id: line.categoryId,
+              name: category?.name ?? '—',
+              parent: parent === undefined ? null : { id: parent.id, name: parent.name },
+            },
+          };
+        })
+        .sort((a, b) => a.category.name.localeCompare(b.category.name)),
     };
   }
 
@@ -1129,6 +1333,9 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
     (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManagePayments'])).token;
   const accountant = async () =>
     (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManageExpenses'])).token;
+  /** Ведёт бюджет: планирует, но расходов не проводит — права разные. */
+  const planner = async () =>
+    (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManageBudget'])).token;
   /** Полные права раздела: обзор сводит и кассу, и расходы. */
   const director = async () =>
     (
@@ -2194,6 +2401,428 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
     });
   });
 
+  describe('Бюджет (ТЗ 5.16)', () => {
+    /** Расход настоящим маршрутом — иначе `spent` считался бы по подставленным данным. */
+    const spend = async (
+      token: string,
+      categoryId: string,
+      amount: number,
+      spentAt: string,
+    ): Promise<void> => {
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Расход',
+        amount,
+        spentAt,
+      }).expect(201);
+    };
+
+    it('план заводится со строками, `spent` считается по расходам периода', async () => {
+      // Главное свойство раздела: потраченное нигде не хранится — оно берётся
+      // из тех же расходов, что видит «Income vs Expense» обзора.
+      const token = await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManageBudget',
+        'Permission.Accounting.ManageExpenses',
+      ]);
+      const officeId = store.seedCategory({ name: 'Офис' });
+      const marketingId = store.seedCategory({ name: 'Маркетинг' });
+
+      await spend(token.token, officeId, 15_100, '2026-02-10');
+      await spend(token.token, marketingId, 3250, '2026-03-01');
+
+      const card = dataOf<{
+        id: string;
+        lines: {
+          category: { name: string };
+          allocated: number;
+          spent: number;
+          overspent: boolean;
+        }[];
+        totals: { allocated: number; spent: number; remaining: number };
+      }>(
+        await send('post', '/api/v1/accounting/budget', token.token, {
+          name: 'Бюджет на I квартал 2026',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          status: 'ACTIVE',
+          lines: [
+            { categoryId: officeId, allocated: 12_000 },
+            { categoryId: marketingId, allocated: 8000 },
+          ],
+        }).expect(201),
+      );
+
+      expect(card.totals).toMatchObject({ allocated: 20_000, spent: 18_350, remaining: 1650 });
+      expect(card.lines.map((line) => line.category.name)).toEqual(['Офис', 'Маркетинг']);
+      expect(card.lines[0]).toMatchObject({ allocated: 12_000, spent: 15_100, overspent: true });
+    });
+
+    it('расход вне периода плана в `spent` не попадает', async () => {
+      const token = await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManageBudget',
+        'Permission.Accounting.ManageExpenses',
+      ]);
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      // 31 декабря и 1 апреля — снаружи периода «январь…март».
+      await spend(token.token, officeId, 100, '2025-12-31');
+      await spend(token.token, officeId, 500, '2026-02-10');
+      await spend(token.token, officeId, 900, '2026-04-01');
+
+      const card = dataOf<{ totals: { spent: number } }>(
+        await send('post', '/api/v1/accounting/budget', token.token, {
+          name: 'Квартал',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          lines: [{ categoryId: officeId, allocated: 1000 }],
+        }).expect(201),
+      );
+
+      expect(card.totals.spent).toBe(500);
+    });
+
+    it('план по разделу собирает расходы его подстатей', async () => {
+      // Ровно то, ради чего справочник статей сделан двухуровневым (0030).
+      const token = await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManageBudget',
+        'Permission.Accounting.ManageExpenses',
+      ]);
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      const vatId = store.seedCategory({ name: 'НДС', parentId: taxId });
+      const incomeTaxId = store.seedCategory({ name: 'Подоходный', parentId: taxId });
+
+      await spend(token.token, vatId, 8000, '2026-02-10');
+      await spend(token.token, incomeTaxId, 5000, '2026-02-11');
+
+      const card = dataOf<{ lines: { spent: number; usage: number }[] }>(
+        await send('post', '/api/v1/accounting/budget', token.token, {
+          name: 'Налоговый план',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          lines: [{ categoryId: taxId, allocated: 26_000 }],
+        }).expect(201),
+      );
+
+      expect(card.lines[0]).toMatchObject({ spent: 13_000, usage: 50 });
+    });
+
+    it('422 на раздел и его подстатью в одном плане — план не заведён', async () => {
+      const token = await planner();
+      const taxId = store.seedCategory({ name: 'Налоги' });
+      const vatId = store.seedCategory({ name: 'НДС', parentId: taxId });
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Двойной счёт',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [
+          { categoryId: taxId, allocated: 30_000 },
+          { categoryId: vatId, allocated: 8000 },
+        ],
+      }).expect(422);
+
+      expect(store.budgetCount()).toBe(0);
+    });
+
+    it('строки заменяются целиком, пустой список очищает план', async () => {
+      const token = await planner();
+      const officeId = store.seedCategory({ name: 'Офис' });
+      const marketingId = store.seedCategory({ name: 'Маркетинг' });
+
+      const { id } = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'План',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          lines: [{ categoryId: officeId, allocated: 100 }],
+        }).expect(201),
+      );
+
+      const replaced = dataOf<{ lines: { category: { id: string } }[] }>(
+        await send('put', `/api/v1/accounting/budget/${id}`, token, {
+          lines: [{ categoryId: marketingId, allocated: 200 }],
+        }).expect(200),
+      );
+      expect(replaced.lines.map((line) => line.category.id)).toEqual([marketingId]);
+
+      // Не переданное поле набор не трогает.
+      await send('put', `/api/v1/accounting/budget/${id}`, token, { name: 'План центра' }).expect(
+        200,
+      );
+      expect(store.budgetLineCount(id)).toBe(1);
+
+      const cleared = dataOf<{ lines: unknown[]; totals: { allocated: number } }>(
+        await send('put', `/api/v1/accounting/budget/${id}`, token, { lines: [] }).expect(200),
+      );
+      expect(cleared.lines).toEqual([]);
+      expect(cleared.totals.allocated).toBe(0);
+    });
+
+    it('закрытый план не правится, но возвращается в работу — и тогда правится', async () => {
+      const token = await planner();
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      const { id } = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'План',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          status: 'ACTIVE',
+          lines: [{ categoryId: officeId, allocated: 100 }],
+        }).expect(201),
+      );
+
+      await send('put', `/api/v1/accounting/budget/${id}`, token, { status: 'CLOSED' }).expect(200);
+
+      // Снимок принятого решения не правится и не удаляется…
+      await send('put', `/api/v1/accounting/budget/${id}`, token, { name: 'Другое имя' }).expect(
+        422,
+      );
+      await send('delete', `/api/v1/accounting/budget/${id}`, token).expect(422);
+      // …и правка «заодно» с открытием тоже не проезжает.
+      await send('put', `/api/v1/accounting/budget/${id}`, token, {
+        status: 'ACTIVE',
+        name: 'Другое имя',
+      }).expect(422);
+
+      // …но обратный ход есть, иначе ошибочное закрытие было бы необратимым.
+      await send('put', `/api/v1/accounting/budget/${id}`, token, { status: 'ACTIVE' }).expect(200);
+      const renamed = dataOf<{ name: string }>(
+        await send('put', `/api/v1/accounting/budget/${id}`, token, { name: 'Другое имя' }).expect(
+          200,
+        ),
+      );
+      expect(renamed.name).toBe('Другое имя');
+    });
+
+    it('статью, запланированную в бюджете, удалить нельзя (409) → убрали из плана → удалилась', async () => {
+      const token = await actor([
+        'Permission.Accounting.Views',
+        'Permission.Accounting.ManageBudget',
+        'Permission.Accounting.ManageExpenses',
+      ]);
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      const { id } = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token.token, {
+          name: 'План',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          lines: [{ categoryId: officeId, allocated: 100 }],
+        }).expect(201),
+      );
+
+      await send('delete', `/api/v1/accounting/expense-categories/${officeId}`, token.token).expect(
+        409,
+      );
+
+      await send('put', `/api/v1/accounting/budget/${id}`, token.token, { lines: [] }).expect(200);
+      await send('delete', `/api/v1/accounting/expense-categories/${officeId}`, token.token).expect(
+        200,
+      );
+    });
+
+    it('периоды разных бюджетов пересекаются — фильтр отбирает по пересечению', async () => {
+      const token = await planner();
+
+      for (const [name, from, to] of [
+        ['Год 2026', '2026-01', '2026-12'],
+        ['Кампания марта', '2026-03', '2026-03'],
+        ['Год 2025', '2025-01', '2025-12'],
+      ]) {
+        await send('post', '/api/v1/accounting/budget', token, {
+          name,
+          periodFrom: from,
+          periodTo: to,
+        }).expect(201);
+      }
+
+      const response = await get('/api/v1/accounting/budget?from=2026-03&to=2026-03', token).expect(
+        200,
+      );
+      const names = dataOf<{ name: string }[]>(response).map((row) => row.name);
+
+      expect(names).toEqual(expect.arrayContaining(['Год 2026', 'Кампания марта']));
+      expect(names).not.toContain('Год 2025');
+    });
+
+    it('фильтр по статье показывает планы, где она есть', async () => {
+      const token = await planner();
+      const officeId = store.seedCategory({ name: 'Офис' });
+      const marketingId = store.seedCategory({ name: 'Маркетинг' });
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Офисный план',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [{ categoryId: officeId, allocated: 100 }],
+      }).expect(201);
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Маркетинговый план',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [{ categoryId: marketingId, allocated: 200 }],
+      }).expect(201);
+
+      const rows = dataOf<{ name: string }[]>(
+        await get(`/api/v1/accounting/budget?categoryId=${officeId}`, token).expect(200),
+      );
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].name).toBe('Офисный план');
+    });
+
+    it('нулевой план допустим, освоения у него нет', async () => {
+      const token = await planner();
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      const card = dataOf<{ lines: { allocated: number; usage: number | null }[] }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'Запрет тратить',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+          lines: [{ categoryId: officeId, allocated: 0 }],
+        }).expect(201),
+      );
+
+      expect(card.lines[0]).toMatchObject({ allocated: 0, usage: null });
+    });
+
+    it('409 на тёзку без учёта регистра, 400 на перевёрнутый и слишком длинный период', async () => {
+      const token = await planner();
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Бюджет центра',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+      }).expect(201);
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'бюджет ЦЕНТРА',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+      }).expect(409);
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Наоборот',
+        periodFrom: '2026-03',
+        periodTo: '2026-01',
+      }).expect(400);
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'Слишком длинный',
+        periodFrom: '2026-01',
+        periodTo: '2031-02',
+      }).expect(400);
+
+      expect(store.budgetCount()).toBe(1);
+    });
+
+    it.each([
+      ['несуществующий месяц', { name: 'План', periodFrom: '2026-13', periodTo: '2026-03' }, 400],
+      ['короткое название', { name: 'До', periodFrom: '2026-01', periodTo: '2026-03' }, 400],
+      ['без периода', { name: 'План без периода' }, 400],
+      [
+        'лишнее поле',
+        { name: 'План', periodFrom: '2026-01', periodTo: '2026-03', spent: 100 },
+        400,
+      ],
+    ])('%s — %i, план не заведён', async (_case, body, status) => {
+      const token = await planner();
+
+      await send('post', '/api/v1/accounting/budget', token, body).expect(status);
+      expect(store.budgetCount()).toBe(0);
+    });
+
+    it('422 на несуществующую и на выведенную из работы статью', async () => {
+      const token = await planner();
+      const retiredId = store.seedCategory({
+        name: 'Устаревшее',
+        status: DirectoryStatus.INACTIVE,
+      });
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'План',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [{ categoryId: randomUUID(), allocated: 100 }],
+      }).expect(422);
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'План',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [{ categoryId: retiredId, allocated: 100 }],
+      }).expect(422);
+
+      expect(store.budgetCount()).toBe(0);
+    });
+
+    it('400 на повтор статьи в плане', async () => {
+      const token = await planner();
+      const officeId = store.seedCategory({ name: 'Офис' });
+
+      await send('post', '/api/v1/accounting/budget', token, {
+        name: 'План',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+        lines: [
+          { categoryId: officeId, allocated: 100 },
+          { categoryId: officeId, allocated: 200 },
+        ],
+      }).expect(400);
+    });
+
+    it('удаляется черновик, 404 на повторное удаление и на неизвестный план', async () => {
+      const token = await planner();
+
+      const { id } = dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/budget', token, {
+          name: 'Ошибочный план',
+          periodFrom: '2026-01',
+          periodTo: '2026-03',
+        }).expect(201),
+      );
+
+      const removed = dataOf<{ name: string }>(
+        await send('delete', `/api/v1/accounting/budget/${id}`, token).expect(200),
+      );
+      expect(removed.name).toBe('Ошибочный план');
+
+      await send('delete', `/api/v1/accounting/budget/${id}`, token).expect(404);
+      await get(`/api/v1/accounting/budget/${randomUUID()}`, token).expect(404);
+      await get('/api/v1/accounting/budget/not-a-uuid', token).expect(400);
+    });
+
+    it('право на просмотр не даёт планировать, право на расходы бюджет не открывает', async () => {
+      const viewerToken = await viewer();
+      const expenseToken = await accountant();
+
+      await get('/api/v1/accounting/budget', viewerToken).expect(200);
+      await send('post', '/api/v1/accounting/budget', viewerToken, {
+        name: 'План',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+      }).expect(403);
+
+      // `ManageExpenses` про проведение денег, `ManageBudget` — про планирование.
+      await send('post', '/api/v1/accounting/budget', expenseToken, {
+        name: 'План',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+      }).expect(403);
+    });
+
+    it('401 без токена, 403 студенту и сотруднику без прав', async () => {
+      await request(app.getHttpServer()).get('/api/v1/accounting/budget').expect(401);
+      await get('/api/v1/accounting/budget', await studentToken()).expect(403);
+      await get('/api/v1/accounting/budget', (await actor([])).token).expect(403);
+    });
+  });
+
   describe('Обзор (ТЗ 5.16)', () => {
     /** Начисленный месяц, частичная оплата и расход — один сценарий на всё. */
     const seedOverview = async (token: string): Promise<void> => {
@@ -2380,9 +3009,21 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
           '/api/v1/accounting/payment-types',
           '/api/v1/accounting/expenses',
           '/api/v1/accounting/expense-categories',
+          '/api/v1/accounting/budget',
           '/api/v1/accounting/overview',
         ]),
       );
+
+      // У бюджета есть и чтение, и запись: план ведут через тот же раздел.
+      expect(Object.keys(document.paths['/api/v1/accounting/budget']).sort()).toEqual([
+        'get',
+        'post',
+      ]);
+      expect(Object.keys(document.paths['/api/v1/accounting/budget/{id}']).sort()).toEqual([
+        'delete',
+        'get',
+        'put',
+      ]);
 
       // У обзора своих действий нет — витрина только читает.
       expect(Object.keys(document.paths['/api/v1/accounting/overview'])).toEqual(['get']);
@@ -2405,6 +3046,13 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
       ).toContain('201');
       expect(Object.keys(document.paths['/api/v1/accounting/payments'].post.responses)).toContain(
         '201',
+      );
+      // Бюджет создаётся, поэтому 201; правка и удаление — 200.
+      expect(Object.keys(document.paths['/api/v1/accounting/budget'].post.responses)).toContain(
+        '201',
+      );
+      expect(Object.keys(document.paths['/api/v1/accounting/budget/{id}'].put.responses)).toContain(
+        '200',
       );
     });
   });

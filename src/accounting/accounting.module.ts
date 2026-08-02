@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 
 import { AccountingRepository } from './accounting.repository';
+import { BudgetController } from './budget.controller';
+import { BudgetService } from './budget.service';
 import { DebtorsController } from './debtors.controller';
 import { DebtorsService } from './debtors.service';
 import { ExpenseCategoriesController } from './expense-categories.controller';
@@ -44,6 +46,7 @@ import { PaymentsService } from './payments.service';
     DebtorsController,
     ExpenseCategoriesController,
     ExpensesController,
+    BudgetController,
     OverviewController,
   ],
   providers: [
@@ -52,6 +55,7 @@ import { PaymentsService } from './payments.service';
     DebtorsService,
     ExpenseCategoriesService,
     ExpensesService,
+    BudgetService,
     OverviewService,
     AccountingRepository,
   ],

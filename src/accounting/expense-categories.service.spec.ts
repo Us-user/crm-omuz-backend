@@ -17,7 +17,7 @@ const row = (overrides: Partial<ExpenseCategoryRow> = {}): ExpenseCategoryRow =>
   parent: null,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-08-01T09:00:00.000Z'),
-  _count: { children: 0, expenses: 0 },
+  _count: { children: 0, expenses: 0, budgetLines: 0 },
   ...overrides,
 });
 
@@ -54,7 +54,7 @@ describe('ExpenseCategoriesService', () => {
   describe('справочник деревом', () => {
     it('собирает подкатегории внутрь родителя', async () => {
       repository.findManyCategories.mockResolvedValue([
-        row({ id: TAX_ID, name: 'Налоги', _count: { children: 1, expenses: 0 } }),
+        row({ id: TAX_ID, name: 'Налоги', _count: { children: 1, expenses: 0, budgetLines: 0 } }),
         row({ id: VAT_ID, name: 'НДС', parent: { id: TAX_ID, name: 'Налоги' } }),
         row({ id: OFFICE_ID, name: 'Офис' }),
       ]);
@@ -89,7 +89,7 @@ describe('ExpenseCategoriesService', () => {
 
     it('в строке — число подкатегорий и расходов', async () => {
       repository.findManyCategories.mockResolvedValue([
-        row({ _count: { children: 4, expenses: 17 } }),
+        row({ _count: { children: 4, expenses: 17, budgetLines: 0 } }),
       ]);
 
       const catalog = await service.findAll(query());
@@ -181,7 +181,9 @@ describe('ExpenseCategoriesService', () => {
     });
 
     it('422 на вложение категории, у которой есть подкатегории', async () => {
-      repository.findCategoryById.mockResolvedValue(row({ _count: { children: 4, expenses: 0 } }));
+      repository.findCategoryById.mockResolvedValue(
+        row({ _count: { children: 4, expenses: 0, budgetLines: 0 } }),
+      );
 
       await expect(service.update(TAX_ID, { parentId: OFFICE_ID })).rejects.toThrow(
         /подкатегории \(4\)/,
@@ -206,17 +208,39 @@ describe('ExpenseCategoriesService', () => {
     });
 
     it('409 на категорию с расходами — с числом и предложением INACTIVE', async () => {
-      repository.findCategoryById.mockResolvedValue(row({ _count: { children: 0, expenses: 9 } }));
+      repository.findCategoryById.mockResolvedValue(
+        row({ _count: { children: 0, expenses: 9, budgetLines: 0 } }),
+      );
 
       await expect(service.remove(TAX_ID)).rejects.toThrow(/расходы \(9\)/);
       expect(repository.deleteCategory).not.toHaveBeenCalled();
     });
 
     it('409 на категорию с подкатегориями', async () => {
-      repository.findCategoryById.mockResolvedValue(row({ _count: { children: 4, expenses: 0 } }));
+      repository.findCategoryById.mockResolvedValue(
+        row({ _count: { children: 4, expenses: 0, budgetLines: 0 } }),
+      );
 
       await expect(service.remove(TAX_ID)).rejects.toBeInstanceOf(ConflictException);
       expect(repository.deleteCategory).not.toHaveBeenCalled();
+    });
+
+    it('409 на категорию, запланированную в бюджетах — с их числом', async () => {
+      // Исчезнув, статья оставила бы строку плана без предмета (0031).
+      repository.findCategoryById.mockResolvedValue(
+        row({ _count: { children: 0, expenses: 0, budgetLines: 2 } }),
+      );
+
+      await expect(service.remove(TAX_ID)).rejects.toThrow(/бюджетах \(2\)/);
+      expect(repository.deleteCategory).not.toHaveBeenCalled();
+    });
+
+    it('число планов отдаётся в карточке категории', async () => {
+      repository.findCategoryById.mockResolvedValue(
+        row({ _count: { children: 0, expenses: 0, budgetLines: 3 } }),
+      );
+
+      await expect(service.findOne(TAX_ID)).resolves.toMatchObject({ budgetLinesCount: 3 });
     });
 
     it('404 на неизвестную категорию — до записи', async () => {

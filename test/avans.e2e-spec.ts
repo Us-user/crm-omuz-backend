@@ -15,6 +15,9 @@ import type {
   AvansEmployee,
   AvansListParams,
   AvansRequestRow,
+  AvansReviewInput,
+  AvansReviewListParams,
+  AvansReviewRow,
 } from 'src/avans/avans.repository';
 import { AvansRepository } from 'src/avans/avans.repository';
 import { AvansSortField } from 'src/avans/dto';
@@ -196,6 +199,87 @@ class InMemoryAvansStore {
     const found = [...this.employees.values()].find((row) => row.accountId === accountId);
 
     return Promise.resolve(found ? { id: found.id } : null);
+  }
+
+  // ─────────────── Рассмотрение (ТЗ 5.16, бухгалтерия) ────────────────
+
+  findManyForReview(
+    params: AvansReviewListParams,
+  ): Promise<{ rows: AvansReviewRow[]; total: number }> {
+    const matched = [...this.requests.values()]
+      .filter((row) => params.employeeId === undefined || row.employeeId === params.employeeId)
+      .filter((row) => params.status === undefined || row.status === params.status)
+      .filter((row) => params.from === undefined || row.month.getTime() >= params.from.getTime())
+      .filter((row) => params.to === undefined || row.month.getTime() <= params.to.getTime())
+      .filter((row) => {
+        if (params.search === undefined) return true;
+        const needle = params.search.toLowerCase();
+        const employee = this.employees.get(row.employeeId);
+
+        return (
+          (employee?.firstName ?? '').toLowerCase().includes(needle) ||
+          (employee?.lastName ?? '').toLowerCase().includes(needle) ||
+          row.reason.toLowerCase().includes(needle)
+        );
+      })
+      .sort((a, b) => {
+        const asc =
+          params.sort === AvansSortField.Month
+            ? a.month.getTime() - b.month.getTime()
+            : params.sort === AvansSortField.Amount
+              ? Number(a.amount) - Number(b.amount)
+              : a.createdAt.getTime() - b.createdAt.getTime();
+
+        return params.order === SortOrder.Asc ? asc : -asc;
+      });
+
+    return Promise.resolve({
+      rows: matched.slice(params.skip, params.skip + params.take).map((row) => this.reviewRow(row)),
+      total: matched.length,
+    });
+  }
+
+  findByIdForReview(id: string): Promise<AvansReviewRow | null> {
+    const row = this.requests.get(id);
+
+    return Promise.resolve(row === undefined ? null : this.reviewRow(row));
+  }
+
+  /** То же, что делает `review` в БД: три колонки решения пишутся вместе. */
+  review(id: string, input: AvansReviewInput): Promise<AvansReviewRow> {
+    const row = this.requests.get(id) as AvansRequestRow;
+    const reviewed = input.status !== AvansStatus.PENDING;
+    const reviewer =
+      input.reviewedById === null ? undefined : this.employees.get(input.reviewedById);
+
+    const updated: AvansRequestRow = {
+      ...row,
+      status: input.status,
+      reviewedAt: reviewed ? new Date('2026-09-05T08:30:00.000Z') : null,
+      reviewComment: reviewed ? input.comment : null,
+      reviewedBy:
+        reviewed && reviewer !== undefined
+          ? { id: reviewer.id, firstName: reviewer.firstName, lastName: reviewer.lastName }
+          : null,
+    };
+    this.requests.set(id, updated);
+
+    return Promise.resolve(this.reviewRow(updated));
+  }
+
+  /** Строка очереди — та же заявка плюс сотрудник, которому аванс. */
+  private reviewRow(row: AvansRequestRow): AvansReviewRow {
+    const employee = this.employees.get(row.employeeId);
+
+    return {
+      ...row,
+      employee: {
+        id: row.employeeId,
+        firstName: employee?.firstName ?? '—',
+        lastName: employee?.lastName ?? '—',
+        status: employee?.status ?? EmployeeStatus.ACTIVE,
+      },
+    };
   }
 }
 
@@ -687,6 +771,248 @@ describe('Заявки на аванс (e2e, хранилище в памяти)
     });
   });
 
+  // ──────────────── Рассмотрение (ТЗ 5.16, бухгалтерия) ─────────────────
+
+  describe('Рассмотрение заявок (ТЗ 5.16)', () => {
+    /** Заявка, поданная настоящим маршрутом, — очередь читает её же. */
+    const submit = async (employeeId: string): Promise<AvansBody> =>
+      dataOf<AvansBody>(
+        await post(`/api/v1/employees/${employeeId}/avans`, await tokenWith(ALL), REQUEST).expect(
+          201,
+        ),
+      );
+
+    it('очередь показывает заявки всего центра с сотрудником в строке', async () => {
+      const first = store.addEmployee();
+      const second = store.addEmployee({ lastName: 'Сафаров' });
+      await submit(first.id);
+      await submit(second.id);
+
+      const rows = dataOf<(AvansBody & { employee: { lastName: string } })[]>(
+        await get('/api/v1/accounting/avans', await tokenWith([VIEWS])).expect(200),
+      );
+
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.employee.lastName).sort()).toEqual(['Раҳимов', 'Сафаров']);
+    });
+
+    it('одобрение подписывается рассмотревшим из токена и меняет статус', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+      const reviewer = store.addEmployee({ firstName: 'Аниса', lastName: 'Р.' });
+      const account = await accountWith(ALL);
+      reviewer.accountId = account.accountId;
+
+      const body = dataOf<AvansBody>(
+        await post(`/api/v1/accounting/avans/${avans.id}/approve`, account.token, {
+          comment: 'Одобрено в полном объёме',
+        }).expect(200),
+      );
+
+      expect(body.status).toBe(AvansStatus.APPROVED);
+      expect(body.review).toMatchObject({
+        comment: 'Одобрено в полном объёме',
+        reviewedBy: { id: reviewer.id, lastName: 'Р.' },
+      });
+    });
+
+    it('одобрение без комментария проходит, отказ без причины — 400', async () => {
+      const employee = store.addEmployee();
+      const token = await tokenWith(ALL);
+
+      const first = await submit(employee.id);
+      await post(`/api/v1/accounting/avans/${first.id}/approve`, token, {}).expect(200);
+
+      const second = await submit(employee.id);
+      await post(`/api/v1/accounting/avans/${second.id}/deny`, token, {}).expect(400);
+      await post(`/api/v1/accounting/avans/${second.id}/deny`, token, { comment: 'Ок' }).expect(
+        400,
+      );
+
+      expect(store.requests.get(second.id)?.status).toBe(AvansStatus.PENDING);
+    });
+
+    it('отказ пишет причину — человек должен узнать, почему отказали', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+
+      const body = dataOf<AvansBody>(
+        await post(`/api/v1/accounting/avans/${avans.id}/deny`, await tokenWith(ALL), {
+          comment: 'Превышает половину оклада',
+        }).expect(200),
+      );
+
+      expect(body.status).toBe(AvansStatus.DENIED);
+      expect(body.review?.comment).toBe('Превышает половину оклада');
+    });
+
+    it('409 на повторное рассмотрение — решение не переписывается вторым', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+      const token = await tokenWith(ALL);
+
+      await post(`/api/v1/accounting/avans/${avans.id}/approve`, token, {}).expect(200);
+      await post(`/api/v1/accounting/avans/${avans.id}/approve`, token, {}).expect(409);
+      await post(`/api/v1/accounting/avans/${avans.id}/deny`, token, {
+        comment: 'Передумали',
+      }).expect(409);
+
+      expect(store.requests.get(avans.id)?.status).toBe(AvansStatus.APPROVED);
+    });
+
+    it('422 на одобрение выведенному из штата, отказать при этом можно', async () => {
+      // Одобренная заявка становится `Prepaid` месяца (ТЗ 5.16) — то есть
+      // выплатой тому, кого в штате нет.
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+      const token = await tokenWith(ALL);
+      employee.status = EmployeeStatus.INACTIVE;
+
+      const response = await post(`/api/v1/accounting/avans/${avans.id}/approve`, token, {}).expect(
+        422,
+      );
+      expect(messageOf(response)).toContain('выведен');
+      expect(store.requests.get(avans.id)?.status).toBe(AvansStatus.PENDING);
+
+      await post(`/api/v1/accounting/avans/${avans.id}/deny`, token, { comment: 'Уволен' }).expect(
+        200,
+      );
+    });
+
+    it('рассмотренная заявка освобождает подачу следующей', async () => {
+      // Правило «одна нерассмотренная» (0022) смотрит только на `PENDING`.
+      const employee = store.addEmployee();
+      const token = await tokenWith(ALL);
+      const first = await submit(employee.id);
+
+      await post(`/api/v1/employees/${employee.id}/avans`, token, REQUEST).expect(409);
+      await post(`/api/v1/accounting/avans/${first.id}/deny`, token, { comment: 'Много' }).expect(
+        200,
+      );
+      await post(`/api/v1/employees/${employee.id}/avans`, token, REQUEST).expect(201);
+    });
+
+    it('снятие рассмотрения возвращает заявку в работу и гасит колонки решения', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+      const token = await tokenWith(ALL);
+
+      await post(`/api/v1/accounting/avans/${avans.id}/approve`, token, {}).expect(200);
+
+      const body = dataOf<AvansBody>(
+        await del(`/api/v1/accounting/avans/${avans.id}/review`, token)
+          .send({ reason: 'Одобрено по ошибке, не тот сотрудник' })
+          .expect(200),
+      );
+
+      expect(body.status).toBe(AvansStatus.PENDING);
+      expect(body.review).toBeNull();
+      // Вернувшаяся в работу заявка снова отзывается — рассмотренная не отзывалась бы.
+      await del(`/api/v1/employees/${employee.id}/avans/${avans.id}`, token).expect(200);
+    });
+
+    it('409 на снятие, если у сотрудника уже есть другая нерассмотренная', async () => {
+      // Иначе у человека оказалось бы две `PENDING` — состояние, которое
+      // подача не допускает.
+      const employee = store.addEmployee();
+      const token = await tokenWith(ALL);
+      const first = await submit(employee.id);
+
+      await post(`/api/v1/accounting/avans/${first.id}/deny`, token, { comment: 'Много' }).expect(
+        200,
+      );
+      await post(`/api/v1/employees/${employee.id}/avans`, token, REQUEST).expect(201);
+
+      await del(`/api/v1/accounting/avans/${first.id}/review`, token)
+        .send({ reason: 'Отказ был ошибочным' })
+        .expect(409);
+
+      expect(store.requests.get(first.id)?.status).toBe(AvansStatus.DENIED);
+    });
+
+    it('422 на снятие с нерассмотренной заявки, 400 без причины', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+      const token = await tokenWith(ALL);
+
+      await del(`/api/v1/accounting/avans/${avans.id}/review`, token)
+        .send({ reason: 'Просто так' })
+        .expect(422);
+
+      await post(`/api/v1/accounting/avans/${avans.id}/approve`, token, {}).expect(200);
+      await del(`/api/v1/accounting/avans/${avans.id}/review`, token).send({}).expect(400);
+    });
+
+    it('фильтры очереди: статус, сотрудник, период и поиск по фамилии', async () => {
+      const first = store.addEmployee();
+      const second = store.addEmployee({ lastName: 'Сафаров' });
+      const token = await tokenWith(ALL);
+      const approved = await submit(first.id);
+      await submit(second.id);
+
+      await post(`/api/v1/accounting/avans/${approved.id}/approve`, token, {}).expect(200);
+
+      const pending = dataOf<AvansBody[]>(
+        await get('/api/v1/accounting/avans?status=PENDING', token).expect(200),
+      );
+      expect(pending).toHaveLength(1);
+      expect(pending[0].employeeId).toBe(second.id);
+
+      const mine = dataOf<AvansBody[]>(
+        await get(`/api/v1/accounting/avans?employeeId=${first.id}`, token).expect(200),
+      );
+      expect(mine).toHaveLength(1);
+
+      const found = dataOf<AvansBody[]>(
+        await get('/api/v1/accounting/avans?search=Сафаров', token).expect(200),
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0].employeeId).toBe(second.id);
+
+      const inPeriod = await get('/api/v1/accounting/avans?from=2026-09&to=2026-09', token).expect(
+        200,
+      );
+      expect(metaOf(inPeriod).total).toBe(2);
+
+      const outside = await get('/api/v1/accounting/avans?from=2026-10', token).expect(200);
+      expect(metaOf(outside).total).toBe(0);
+    });
+
+    it('404 на неизвестную заявку, 400 на не-UUID и на негодный месяц', async () => {
+      const token = await tokenWith(ALL);
+
+      await get(`/api/v1/accounting/avans/${randomUUID()}`, token).expect(404);
+      await post(`/api/v1/accounting/avans/${randomUUID()}/approve`, token, {}).expect(404);
+      await get('/api/v1/accounting/avans/не-uuid', token).expect(400);
+      await get('/api/v1/accounting/avans?from=2026-13', token).expect(400);
+    });
+
+    it('право на просмотр не даёт рассматривать, право на подачу — тоже', async () => {
+      const employee = store.addEmployee();
+      const avans = await submit(employee.id);
+
+      await get('/api/v1/accounting/avans', await tokenWith([VIEWS])).expect(200);
+      await post(
+        `/api/v1/accounting/avans/${avans.id}/approve`,
+        await tokenWith([VIEWS]),
+        {},
+      ).expect(403);
+      await post(
+        `/api/v1/accounting/avans/${avans.id}/approve`,
+        await tokenWith([CREATE]),
+        {},
+      ).expect(403);
+      // И наоборот: право на рассмотрение не заменяет право на просмотр очереди.
+      await get('/api/v1/accounting/avans', await tokenWith([APPROVE])).expect(403);
+    });
+
+    it('401 без токена, 403 студенту и сотруднику без прав', async () => {
+      await server().get('/api/v1/accounting/avans').expect(401);
+      await get('/api/v1/accounting/avans', await studentToken()).expect(403);
+      await get('/api/v1/accounting/avans', await tokenWith([])).expect(403);
+    });
+  });
+
   describe('OpenAPI', () => {
     it('два пути описаны, подача отвечает 201, а правки заявки нет', () => {
       const document = buildOpenApiDocument(app);
@@ -708,6 +1034,32 @@ describe('Заявки на аванс (e2e, хранилище в памяти)
       const single = document.paths['/api/v1/employees/{employeeId}/avans/{avansId}'];
       expect(single?.delete?.responses['200']).toBeDefined();
       expect(single?.put).toBeUndefined();
+    });
+
+    it('пути рассмотрения описаны, решения отвечают 200 и не 201', () => {
+      const document = buildOpenApiDocument(app);
+
+      expect(Object.keys(document.paths)).toEqual(
+        expect.arrayContaining([
+          '/api/v1/accounting/avans',
+          '/api/v1/accounting/avans/{id}',
+          '/api/v1/accounting/avans/{id}/approve',
+          '/api/v1/accounting/avans/{id}/deny',
+          '/api/v1/accounting/avans/{id}/review',
+        ]),
+      );
+
+      // `POST /accounting/avans` из перечня ТЗ здесь не заводится: подача уже
+      // есть по адресу сотрудника, и третий способ завести заявку был бы
+      // третьим набором правил о том же.
+      expect(Object.keys(document.paths['/api/v1/accounting/avans'] ?? {})).toEqual(['get']);
+
+      const approve = document.paths['/api/v1/accounting/avans/{id}/approve'];
+      expect(approve?.post?.responses['200']).toBeDefined();
+      expect(approve?.post?.responses['201']).toBeUndefined();
+
+      const review = document.paths['/api/v1/accounting/avans/{id}/review'];
+      expect(review?.delete?.responses['200']).toBeDefined();
     });
   });
 });

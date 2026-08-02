@@ -1,3 +1,4 @@
+export * from './budget.dto';
 export * from './charge.dto';
 export * from './debtor.dto';
 export * from './expense-category.dto';

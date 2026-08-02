@@ -33,7 +33,7 @@ const category = (overrides: Partial<ExpenseCategoryRow> = {}): ExpenseCategoryR
   parent: null,
   status: DirectoryStatus.ACTIVE,
   createdAt: new Date('2026-08-01T09:00:00.000Z'),
-  _count: { children: 0, expenses: 0 },
+  _count: { children: 0, expenses: 0, budgetLines: 0 },
   ...overrides,
 });
 

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DirectoryStatus, Prisma } from '@prisma/client';
+import type { BudgetStatus, DirectoryStatus, Prisma } from '@prisma/client';
 import { GroupStatus, GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { DebtorChargeTotals, DebtorDebt } from './accounting';
 import { ChargeStatus, dueCentsOf, toCents } from './accounting';
 import {
+  BudgetSortField,
   ChargeSortField,
   ExpenseSortField,
   PaymentTypeSortField,
@@ -84,7 +85,10 @@ const EXPENSE_CATEGORY_SELECT = {
   status: true,
   createdAt: true,
   parent: { select: { id: true, name: true } },
-  _count: { select: { children: true, expenses: true } },
+  // `budgetLines` — ради запрета на удаление статьи, которую кто-то планирует
+  // (0031): внешний ключ `RESTRICT` и так не пустит, но наружу должна уходить
+  // причина, а не обезличенная ошибка связи.
+  _count: { select: { children: true, expenses: true, budgetLines: true } },
 } satisfies Prisma.ExpenseCategorySelect;
 
 export type ExpenseCategoryRow = Prisma.ExpenseCategoryGetPayload<{
@@ -104,6 +108,35 @@ const EXPENSE_SELECT = {
 } satisfies Prisma.ExpenseSelect;
 
 export type ExpenseRow = Prisma.ExpenseGetPayload<{ select: typeof EXPENSE_SELECT }>;
+
+/**
+ * Бюджет вместе со строками плана (ТЗ 5.16). Строки отдаются со строкой
+ * бюджета, а не догружаются: план из трёх статей не стоит второго запроса,
+ * а список бюджетов всё равно считает по ним итоги.
+ */
+const BUDGET_SELECT = {
+  id: true,
+  name: true,
+  description: true,
+  periodFrom: true,
+  periodTo: true,
+  status: true,
+  createdAt: true,
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+  lines: {
+    select: {
+      id: true,
+      allocated: true,
+      note: true,
+      category: {
+        select: { id: true, name: true, parent: { select: { id: true, name: true } } },
+      },
+    },
+    orderBy: { category: { name: 'asc' } },
+  },
+} satisfies Prisma.BudgetSelect;
+
+export type BudgetRow = Prisma.BudgetGetPayload<{ select: typeof BUDGET_SELECT }>;
 
 /** Карточка начисления: та же строка плюс платежи, которые её закрывают. */
 export interface ChargeCard {
@@ -229,6 +262,51 @@ export interface ExpenseUpdateInput {
   spentAt?: Date;
   branchId?: string | null;
   note?: string | null;
+}
+
+/**
+ * Отбор бюджетов. `from`/`to` — отрезок, с которым период плана должен
+ * **пересекаться**: вопрос «какие планы действуют в марте» не тот же самый,
+ * что «какие планы начались в марте», и второй ответ бесполезен.
+ */
+export interface BudgetListParams {
+  status?: BudgetStatus;
+  categoryId?: string;
+  from?: Date;
+  to?: Date;
+  search?: string;
+  sort: BudgetSortField;
+  order: SortOrder;
+  skip: number;
+  take: number;
+}
+
+/** Строка плана в том виде, в каком её принимает запись. */
+export interface BudgetLineInput {
+  categoryId: string;
+  allocatedCents: number;
+  note: string | null;
+}
+
+export interface BudgetCreateInput {
+  name: string;
+  description: string | null;
+  periodFrom: Date;
+  periodTo: Date;
+  status?: BudgetStatus;
+  lines: BudgetLineInput[];
+  createdById: string | null;
+}
+
+/** `undefined` — колонку не менять; значение (включая `null`) — записать. */
+export interface BudgetUpdateInput {
+  name?: string;
+  description?: string | null;
+  periodFrom?: Date;
+  periodTo?: Date;
+  status?: BudgetStatus;
+  /** `undefined` — набор строк не трогать; массив (в том числе пустой) — заменить. */
+  lines?: BudgetLineInput[];
 }
 
 export interface PaymentTypeListParams {
@@ -1007,6 +1085,203 @@ export class AccountingRepository {
     return this.prisma.branch.findUnique({
       where: { id },
       select: { id: true, name: true, status: true },
+    });
+  }
+
+  // ────────────────────────── Бюджет (ТЗ 5.16) ──────────────────────────────
+
+  async findManyBudgets(params: BudgetListParams): Promise<{ rows: BudgetRow[]; total: number }> {
+    // Пересечение отрезков: план попадает в отбор, если он начался не позже
+    // конца запрошенного периода и кончился не раньше его начала. Обе границы
+    // включающие — как и сам период плана.
+    const where: Prisma.BudgetWhereInput = {
+      ...(params.status === undefined ? {} : { status: params.status }),
+      ...(params.categoryId === undefined
+        ? {}
+        : { lines: { some: { categoryId: params.categoryId } } }),
+      ...(params.to === undefined ? {} : { periodFrom: { lte: params.to } }),
+      ...(params.from === undefined ? {} : { periodTo: { gte: params.from } }),
+      ...(params.search === undefined
+        ? {}
+        : {
+            OR: [
+              { name: { contains: params.search, mode: 'insensitive' } },
+              { description: { contains: params.search, mode: 'insensitive' } },
+            ],
+          }),
+    };
+
+    const orderBy: Prisma.BudgetOrderByWithRelationInput[] =
+      params.sort === BudgetSortField.Name
+        ? [{ name: params.order }]
+        : params.sort === BudgetSortField.CreatedAt
+          ? [{ createdAt: params.order }]
+          : // По умолчанию — свежие периоды сверху; внутри месяца порядок
+            // закреплён идентификатором, иначе строка приходила бы на двух
+            // страницах подряд (приём сессии 0024).
+            [{ periodFrom: params.order }, { id: 'asc' }];
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.budget.findMany({
+        where,
+        select: BUDGET_SELECT,
+        orderBy,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.budget.count({ where }),
+    ]);
+
+    return { rows, total };
+  }
+
+  findBudgetById(id: string): Promise<BudgetRow | null> {
+    return this.prisma.budget.findUnique({ where: { id }, select: BUDGET_SELECT });
+  }
+
+  /** Тёзка без учёта регистра — как во всех справочниках проекта. */
+  findBudgetByName(name: string): Promise<{ id: string; name: string } | null> {
+    return this.prisma.budget.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+      select: { id: true, name: true },
+    });
+  }
+
+  /**
+   * Заведение плана вместе со строками — одной транзакцией: бюджет,
+   * появившийся без обещанных строк, выглядел бы планом, в котором ничего
+   * не выделено (ТЗ 7, то же соображение, что у купона с курсами, 0027).
+   */
+  createBudget(input: BudgetCreateInput): Promise<BudgetRow> {
+    return this.prisma.budget.create({
+      data: {
+        name: input.name,
+        description: input.description,
+        periodFrom: input.periodFrom,
+        periodTo: input.periodTo,
+        status: input.status,
+        createdById: input.createdById,
+        lines: {
+          create: input.lines.map((line) => ({
+            categoryId: line.categoryId,
+            allocated: money(line.allocatedCents),
+            note: line.note,
+          })),
+        },
+      },
+      select: BUDGET_SELECT,
+    });
+  }
+
+  /**
+   * Правка плана. Набор строк заменяется целиком и **в той же транзакции**:
+   * замена, оборвавшаяся между `deleteMany` и `createMany`, оставила бы план
+   * пустым — то есть бюджетом, в котором ничего не выделено.
+   */
+  updateBudget(id: string, input: BudgetUpdateInput): Promise<BudgetRow> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.budget.update({
+        where: { id },
+        data: {
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.periodFrom === undefined ? {} : { periodFrom: input.periodFrom }),
+          ...(input.periodTo === undefined ? {} : { periodTo: input.periodTo }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+        },
+      });
+
+      if (input.lines !== undefined) {
+        await tx.budgetCategory.deleteMany({ where: { budgetId: id } });
+
+        if (input.lines.length > 0) {
+          await tx.budgetCategory.createMany({
+            data: input.lines.map((line) => ({
+              budgetId: id,
+              categoryId: line.categoryId,
+              allocated: money(line.allocatedCents),
+              note: line.note,
+            })),
+          });
+        }
+      }
+
+      return tx.budget.findUniqueOrThrow({ where: { id }, select: BUDGET_SELECT });
+    });
+  }
+
+  async deleteBudget(id: string): Promise<void> {
+    await this.prisma.budget.delete({ where: { id } });
+  }
+
+  /**
+   * Сколько ушло по каждой статье за окно — основа `spent` плана.
+   *
+   * Агрегат считает БД: строки расходов сюда не читаются (в отличие от обзора,
+   * 0030, где нужна помесячная раскладка, а её Prisma не выражает). Отбор сужен
+   * набором статей, поэтому запрос ложится на индекс `(categoryId, spentAt)`.
+   *
+   * Подъём сумм подкатегорий к разделу делает **чистая функция**: раздел,
+   * по которому в периоде не тратили, обязан остаться в плане с нулём,
+   * а по расходам его было бы не восстановить.
+   */
+  async findExpenseTotalsByCategory(
+    from: Date,
+    to: Date,
+    categoryIds: string[],
+  ): Promise<Map<string, number>> {
+    if (categoryIds.length === 0) return new Map();
+
+    const groups = await this.prisma.expense.groupBy({
+      by: ['categoryId'],
+      where: { spentAt: { gte: from, lt: to }, categoryId: { in: categoryIds } },
+      _sum: { amount: true },
+    });
+
+    return new Map(
+      groups.map(({ categoryId, _sum }) => [
+        categoryId,
+        _sum.amount === null ? 0 : toCents(_sum.amount),
+      ]),
+    );
+  }
+
+  /**
+   * Подкатегории перечисленных статей: `parentId → [id]`. Ими план по разделу
+   * собирает расходы своих подкатегорий, а правило «раздел и его подкатегория
+   * не соседствуют в одном бюджете» — проверяет родство.
+   */
+  async findChildIdsByParents(parentIds: string[]): Promise<Map<string, string[]>> {
+    if (parentIds.length === 0) return new Map();
+
+    const rows = await this.prisma.expenseCategory.findMany({
+      where: { parentId: { in: parentIds } },
+      select: { id: true, parentId: true },
+    });
+
+    const children = new Map<string, string[]>();
+    for (const row of rows) {
+      if (row.parentId === null) continue;
+      children.set(row.parentId, [...(children.get(row.parentId) ?? []), row.id]);
+    }
+
+    return children;
+  }
+
+  /** Категории по идентификаторам — ими проверяются строки плана. */
+  findCategoriesByIds(ids: string[]): Promise<
+    {
+      id: string;
+      name: string;
+      status: DirectoryStatus;
+      parentId: string | null;
+    }[]
+  > {
+    if (ids.length === 0) return Promise.resolve([]);
+
+    return this.prisma.expenseCategory.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true, status: true, parentId: true },
     });
   }
 

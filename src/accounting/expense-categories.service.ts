@@ -143,9 +143,9 @@ export class ExpenseCategoriesService {
   }
 
   /**
-   * Категория с расходами или с подкатегориями не удаляется (409). Внешние
-   * ключи стоят `RESTRICT` и так не пустят, но наружу должна уходить причина,
-   * а не обезличенная ошибка связи (0021, 0027, 0029).
+   * Категория с расходами, с планами или с подкатегориями не удаляется (409).
+   * Внешние ключи стоят `RESTRICT` и так не пустят, но наружу должна уходить
+   * причина, а не обезличенная ошибка связи (0021, 0027, 0029).
    */
   async remove(id: string): Promise<ExpenseCategoryDeletedDto> {
     const category = await this.require(id);
@@ -154,6 +154,16 @@ export class ExpenseCategoriesService {
       throw new ConflictException(
         `По категории проведены расходы (${String(category._count.expenses)}) — ` +
           'переведите её в статус «INACTIVE» вместо удаления',
+      );
+    }
+
+    // Статья, которую планируют, тоже держит справочник (0031): исчезнув,
+    // она оставила бы строку бюджета без предмета, и «сколько мы решили
+    // потратить на маркетинг» перестало бы иметь ответ.
+    if (category._count.budgetLines > 0) {
+      throw new ConflictException(
+        `Категория запланирована в бюджетах (${String(category._count.budgetLines)}) — ` +
+          'уберите её из планов или переведите в статус «INACTIVE»',
       );
     }
 
@@ -213,5 +223,6 @@ const toDto = (row: ExpenseCategoryRow): ExpenseCategoryDto => ({
   status: row.status,
   childrenCount: row._count.children,
   expensesCount: row._count.expenses,
+  budgetLinesCount: row._count.budgetLines,
   createdAt: row.createdAt.toISOString(),
 });

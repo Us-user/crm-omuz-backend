@@ -43,6 +43,14 @@ export class ExpenseCategoryDto {
   })
   expensesCount!: number;
 
+  @ApiProperty({
+    example: 2,
+    description:
+      'В скольких бюджетах статья запланирована (ТЗ 5.16). Запланированная не удаляется (409): ' +
+      'иначе строка плана осталась бы без предмета.',
+  })
+  budgetLinesCount!: number;
+
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
 }
