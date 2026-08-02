@@ -247,6 +247,20 @@
 server`) — известное состояние окружения с сессии 0001, подтверждено текстом ошибки
 Prisma; в CI набор зелёный.
 
+**Проверено в CI после пуша** (run `30765951931`, коммит `8d001e2`, зелёный):
+- `npm run lint` → `npm run typecheck` → `npm test` — 1806 тестов, 81 набор;
+- `npx prisma migrate deploy` — все **двадцать пять** прежних миграций применены
+  к реальному PostgreSQL 16, `All migrations have been successfully applied`
+  (новых в этой сессии не было);
+- `npm run test:e2e` целиком — **30 наборов, 1140 тестов** (было 29 и 1099), включая
+  `health.e2e-spec.ts` с полным `AppModule` (Prisma + Redis + BullMQ + Mailer + Auth +
+  Rbac + Students + StudentAccess + StudentCabinet + StudentCoins + StudentFeedback +
+  StudentParents + Performance + Leaders + Leads + Coupons + LeftCourses + Graduates +
+  Employees + MentorCabinet + MentorLevels + Avans + Accounting + Branches + Rooms +
+  Courses + Groups + GroupJournal + GroupMentors + GroupSchedule + GroupStudents +
+  Syllabus + Timetable + **Dashboard**) против настоящих PostgreSQL и Redis: приложение
+  с новым модулем поднимается и подтверждает `database: up`.
+
 **НЕ проверено (честно):**
 - **Prisma-запросы `DashboardRepository` на настоящей БД не выполнялись.** В e2e репозиторий
   подменён хранилищем в памяти, а миграции в этой сессии нет — значит, и CI их не тронет.
@@ -359,5 +373,11 @@ Prisma; в CI набор зелёный.
 
 ## Коммит
 
-- (заполняется после коммита)
+- `8d001e2` — «Фаза 10: Dashboard — шесть сводных витрин центра» (16 файлов).
+- На `8d001e2` прогнан зелёный CI (run `30765951931`): lint → typecheck → unit →
+  `migrate deploy` → e2e.
+- Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
+  В самом сообщении число e2e названо как 1138 (столько проходит локально, без двух
+  тестов `health.e2e-spec.ts`, которым нужна живая БД); в CI их 1140 — здесь и в roadmap
+  указано это число, как и во всех прошлых логах.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
