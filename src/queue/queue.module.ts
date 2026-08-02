@@ -3,9 +3,21 @@ import { Global, Module } from '@nestjs/common';
 
 import { AppConfigService } from '../config';
 import { AppConfigModule } from '../config/config.module';
-import { NotificationsProcessor } from './notifications.processor';
 import { QUEUE_NAMES } from './queue.constants';
 
+/**
+ * Очередь фоновых задач (ТЗ 2).
+ *
+ * Обработчика здесь **нет**: он живёт рядом со своей предметной областью —
+ * `MailingDeliveryProcessor` в `MailingsWorkerModule`. Заглушка, стоявшая тут
+ * с сессии 0001, удалена вместе с появлением настоящего обработчика: два
+ * `@Processor` на одну очередь создали бы двух воркеров, и задачи делились бы
+ * между ними случайно — половина рассылки молча уходила бы в лог заглушки.
+ *
+ * Модуль остаётся глобальным и экспортирует `BullModule`: очередь
+ * `notifications` регистрируется один раз, а ставить в неё задачи может любой
+ * модуль через `@InjectQueue`.
+ */
 @Global()
 @Module({
   imports: [
@@ -33,7 +45,6 @@ import { QUEUE_NAMES } from './queue.constants';
     }),
     BullModule.registerQueue({ name: QUEUE_NAMES.Notifications }),
   ],
-  providers: [NotificationsProcessor],
   exports: [BullModule],
 })
 export class QueueModule {}

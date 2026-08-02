@@ -23,7 +23,10 @@ import { LeadsModule } from './leads/leads.module';
 import { LeftCoursesModule } from './left-courses/left-courses.module';
 import { LoggerModule } from './logger/logger.module';
 import { MailerModule } from './mailer/mailer.module';
+import { MailingsWorkerModule } from './mailings/mailings-worker.module';
+import { MailingsModule } from './mailings/mailings.module';
 import { MentorCabinetModule } from './mentor-cabinet/mentor-cabinet.module';
+import { MessagingModule } from './messaging/messaging.module';
 import { MentorLevelsModule } from './mentor-levels/mentor-levels.module';
 import { PerformanceModule } from './performance/performance.module';
 import { PhoneModule } from './phone/phone.module';
@@ -50,6 +53,7 @@ import { TimetableModule } from './timetable/timetable.module';
     RedisModule,
     QueueModule,
     MailerModule,
+    MessagingModule,
     PhoneModule,
     AuthModule,
     RbacModule,
@@ -82,6 +86,10 @@ import { TimetableModule } from './timetable/timetable.module';
     SyllabusModule,
     TimetableModule,
     DashboardModule,
+    MailingsModule,
+    // Обработчик очереди подключается отдельным модулем: он создаёт воркер
+    // BullMQ, и e2e-наборам рассылок Redis для этого не нужен.
+    MailingsWorkerModule,
     HealthModule,
   ],
   providers: [
