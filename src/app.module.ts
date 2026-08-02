@@ -9,6 +9,7 @@ import { AllExceptionsFilter, TransformResponseInterceptor } from './common';
 import { AppConfigModule } from './config/config.module';
 import { CouponsModule } from './coupons/coupons.module';
 import { CoursesModule } from './courses/courses.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { EmployeesModule } from './employees/employees.module';
 import { GroupJournalModule } from './group-journal/group-journal.module';
 import { GroupMentorsModule } from './group-mentors/group-mentors.module';
@@ -80,6 +81,7 @@ import { TimetableModule } from './timetable/timetable.module';
     GroupStudentsModule,
     SyllabusModule,
     TimetableModule,
+    DashboardModule,
     HealthModule,
   ],
   providers: [
