@@ -275,6 +275,19 @@ Accounting periods намеренно не брались — это после�
     у `/{id}` — `get`/`put`/`delete` (без `post`), у `/{id}/confirm` — `post` и `delete`,
     формирование и выплата отвечают 201, **подтверждение — 200 и не 201**.
 
+**Проверено в CI после пуша** (run `30740042305`, коммит `8cab99c`, зелёный):
+- `npx prisma migrate deploy` — все **двадцать четыре** миграции применены к реальному
+  PostgreSQL 16, включая новую `20260803000000_phase9_salary`: enum `SalaryStatus`,
+  две таблицы (`salaries`, `salary_transactions`), две колонки у `journal_days`
+  и одна у `budgets`, уникальный индекс `(employeeId, month)`, шесть обычных индексов
+  и семь внешних ключей (`CASCADE` на сотрудника расчёта, `RESTRICT` на расчёт и способ
+  оплаты, `SET NULL` на ведущего дня и на авторов) в БД разворачиваются;
+- `npm test` — 1575 тестов, 74 набора;
+- `npm run test:e2e` целиком — **28 наборов, 1048 тестов** (было 28 и 1008), включая
+  `health.e2e-spec.ts` с полным `AppModule` против настоящих PostgreSQL и Redis:
+  приложение с новым `SalaryController` в `AccountingModule` поднимается и подтверждает
+  `database: up` — то есть DI не сломан.
+
 **Локально падают 2 теста `health.e2e-spec.ts`** (`Authentication failed against database
 server`) — известное состояние окружения с сессии 0001; в CI набор зелёный.
 
@@ -369,6 +382,8 @@ income/expense/paid/notpaid/net, закрытие Inprogress→Archive, выгр
 
 ## Коммит
 
-- `<хеш>` — «Фаза 9: зарплата, часы ментора и план фонда оплаты труда».
+- `8cab99c` — «Фаза 9: зарплата, часы ментора и план фонда оплаты труда» (39 файлов).
+- На `8cab99c` прогнан зелёный CI (run `30740042305`): lint → typecheck → unit →
+  `migrate deploy` → e2e.
 - Сообщение коммита передано файлом через `-F` — по заметке из сессии 0007.
 - Репозиторий: https://github.com/Us-user/crm-omuz-backend
