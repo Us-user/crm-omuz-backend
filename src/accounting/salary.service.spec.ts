@@ -5,6 +5,7 @@ import { BusinessRuleException, SortOrder } from '../common';
 import type { MonthLevel, SalaryRow } from './accounting.repository';
 import type { AccountingRepository } from './accounting.repository';
 import { SalarySortField } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 import { SalaryService } from './salary.service';
 
 const SALARY_ID = '11111111-1111-4111-8111-111111111111';
@@ -105,9 +106,11 @@ describe('SalaryService', () => {
         .fn()
         .mockResolvedValue({ id: TYPE_ID, name: 'Наличные', status: 'ACTIVE' }),
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: AUTHOR_ID }),
+      // По умолчанию закрытых периодов нет — правило 0033 проверяется отдельно.
+      findArchivedPeriodForMonth: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<AccountingRepository>;
 
-    service = new SalaryService(repository);
+    service = new SalaryService(repository, new PeriodGuardService(repository));
   });
 
   // ─────────────────────────────── Ведомость ──────────────────────────────────
@@ -671,6 +674,71 @@ describe('SalaryService', () => {
 
     it('404 на неизвестный расчёт', async () => {
       await expect(service.remove(SALARY_ID)).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+  // ────────────── Закрытый финансовый период (решение 0033) ──────────────────
+
+  describe('закрытый период', () => {
+    const OCTOBER = new Date('2026-10-01T00:00:00.000Z');
+    const archived = {
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'IV квартал 2026',
+      periodFrom: OCTOBER,
+      periodTo: new Date('2026-12-01T00:00:00.000Z'),
+    };
+
+    beforeEach(() => {
+      repository.findArchivedPeriodForMonth.mockResolvedValue(archived);
+    });
+
+    it('422 на выплату, датированную закрытым днём, — она не заведена', async () => {
+      repository.findSalaryById.mockResolvedValue(
+        row({ status: SalaryStatus.DONE, total: new Prisma.Decimal('270.00') }),
+      );
+      repository.findTaughtMinutes.mockResolvedValue(new Map());
+      repository.findMonthLevels.mockResolvedValue(new Map());
+      repository.findApprovedAvansTotals.mockResolvedValue(new Map());
+      repository.findSalaryPaidTotals.mockResolvedValue(new Map());
+
+      await expect(
+        service.pay(SALARY_ID, { amount: 100, typeId: TYPE_ID, paidAt: '2026-10-05' }, ACCOUNT_ID),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.createSalaryTransaction).not.toHaveBeenCalled();
+    });
+
+    it('422 на отмену выплаты из закрытого периода', async () => {
+      repository.findSalaryTransactionById.mockResolvedValue({
+        id: 't1',
+        salaryId: SALARY_ID,
+        amount: new Prisma.Decimal('500.00'),
+        paidAt: new Date('2026-10-05T00:00:00.000Z'),
+        comment: null,
+        createdAt: new Date(),
+        type: { id: TYPE_ID, name: 'Наличные' },
+        createdBy: null,
+      });
+
+      await expect(service.removeTransaction('t1', { reason: 'Дубль' })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.deleteSalaryTransaction).not.toHaveBeenCalled();
+    });
+
+    it('проверяется день выплаты, а не месяц расчёта', async () => {
+      // Расчёт за сентябрь, выплата в октябре: закрыт октябрь — отказ,
+      // и спрашивается именно он.
+      repository.findSalaryById.mockResolvedValue(
+        row({ status: SalaryStatus.DONE, total: new Prisma.Decimal('270.00') }),
+      );
+      repository.findTaughtMinutes.mockResolvedValue(new Map());
+      repository.findMonthLevels.mockResolvedValue(new Map());
+      repository.findApprovedAvansTotals.mockResolvedValue(new Map());
+      repository.findSalaryPaidTotals.mockResolvedValue(new Map());
+
+      await expect(
+        service.pay(SALARY_ID, { amount: 100, typeId: TYPE_ID, paidAt: '2026-10-05' }, ACCOUNT_ID),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.findArchivedPeriodForMonth).toHaveBeenCalledWith(OCTOBER);
     });
   });
 });

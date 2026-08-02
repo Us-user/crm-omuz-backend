@@ -5,5 +5,6 @@ export * from './expense-category.dto';
 export * from './expense.dto';
 export * from './overview.dto';
 export * from './payment-type.dto';
+export * from './period.dto';
 export * from './salary.dto';
 export * from './transaction.dto';

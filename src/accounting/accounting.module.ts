@@ -15,6 +15,9 @@ import { PaymentTypesController } from './payment-types.controller';
 import { PaymentTypesService } from './payment-types.service';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { PeriodsController } from './periods.controller';
+import { PeriodsService } from './periods.service';
+import { PeriodGuardService } from './period-guard.service';
 import { SalaryController } from './salary.controller';
 import { SalaryService } from './salary.service';
 
@@ -50,6 +53,7 @@ import { SalaryService } from './salary.service';
     ExpensesController,
     BudgetController,
     SalaryController,
+    PeriodsController,
     OverviewController,
   ],
   providers: [
@@ -60,6 +64,8 @@ import { SalaryService } from './salary.service';
     ExpensesService,
     BudgetService,
     SalaryService,
+    PeriodsService,
+    PeriodGuardService,
     OverviewService,
     AccountingRepository,
   ],

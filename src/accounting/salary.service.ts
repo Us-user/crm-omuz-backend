@@ -36,6 +36,7 @@ import type {
   UpdateSalaryDto,
 } from './dto';
 import { SalarySortField } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 import type { SalaryComputed } from './salary';
 import {
   computeSalary,
@@ -76,7 +77,10 @@ interface SalaryContext {
 export class SalaryService {
   private readonly logger = new Logger(SalaryService.name);
 
-  constructor(private readonly repository: AccountingRepository) {}
+  constructor(
+    private readonly repository: AccountingRepository,
+    private readonly periods: PeriodGuardService,
+  ) {}
 
   /** Ведомость месяца (ТЗ 5.16: `GET /accounting/salary`). */
   async findAll(query: SalaryQueryDto): Promise<Paginated<SalaryDto>> {
@@ -352,10 +356,15 @@ export class SalaryService {
       );
     }
 
+    const paidAt = dto.paidAt === undefined ? today() : parseIsoDate(dto.paidAt, 'paidAt');
+    // По дню выплаты, а не по месяцу расчёта: зарплату за сентябрь выдают
+    // в октябре, и в отчёт она попадает днём, когда деньги ушли (0030, 0033).
+    await this.periods.assertDateOpen(paidAt, 'Выплата зарплаты');
+
     const transaction = await this.repository.createSalaryTransaction({
       salaryId: id,
       amountCents,
-      paidAt: dto.paidAt === undefined ? today() : parseIsoDate(dto.paidAt, 'paidAt'),
+      paidAt,
       typeId: await this.resolveType(dto.typeId),
       comment: dto.comment === undefined ? null : (emptyToNullPatch(dto.comment) ?? null),
       createdById: await this.employeeIdOf(accountId),
@@ -379,6 +388,7 @@ export class SalaryService {
       throw new NotFoundException('Выплата не найдена');
     }
 
+    await this.periods.assertDateOpen(transaction.paidAt, 'Отмена выплаты');
     await this.repository.deleteSalaryTransaction(id);
 
     const title = `${String(Number(transaction.amount))} TJS от ${formatIsoDate(transaction.paidAt)}`;

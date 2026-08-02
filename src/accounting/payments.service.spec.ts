@@ -10,6 +10,7 @@ import type {
   TransactionRow,
 } from './accounting.repository';
 import { ChargesQueryDto, TransactionsQueryDto } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 import { PaymentsService } from './payments.service';
 
 const CHARGE_ID = '11111111-1111-1111-1111-111111111111';
@@ -113,6 +114,7 @@ describe('PaymentsService', () => {
       | 'findTypeById'
       | 'findStudentById'
       | 'findEmployeeByAccount'
+      | 'findArchivedPeriodForMonth'
     >
   >;
   let service: PaymentsService;
@@ -151,9 +153,14 @@ describe('PaymentsService', () => {
         .fn()
         .mockResolvedValue({ id: STUDENT_ID, firstName: 'Нилуфар', lastName: 'Каримова' }),
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
+      // По умолчанию закрытых периодов нет — правило 0033 проверяется отдельно.
+      findArchivedPeriodForMonth: jest.fn().mockResolvedValue(null),
     };
 
-    service = new PaymentsService(repository as unknown as AccountingRepository);
+    service = new PaymentsService(
+      repository as unknown as AccountingRepository,
+      new PeriodGuardService(repository as unknown as AccountingRepository),
+    );
   });
 
   describe('начисление месяца', () => {
@@ -716,6 +723,101 @@ describe('PaymentsService', () => {
         service.removeTransaction(TRANSACTION_ID, { reason: 'x' }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(repository.deleteTransaction).not.toHaveBeenCalled();
+    });
+  });
+  // ────────────── Закрытый финансовый период (решение 0033) ──────────────────
+
+  describe('закрытый период', () => {
+    const AUGUST = new Date('2026-08-01T00:00:00.000Z');
+    const archived = {
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'III квартал 2026',
+      periodFrom: new Date('2026-07-01T00:00:00.000Z'),
+      periodTo: SEPTEMBER,
+    };
+
+    beforeEach(() => {
+      repository.findArchivedPeriodForMonth.mockResolvedValue(archived);
+    });
+
+    it('422 на начисление месяца, попавшего в закрытый период', async () => {
+      await expect(service.chargeMonth({ month: '2026-09' }, ACCOUNT_ID)).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.createCharges).not.toHaveBeenCalled();
+      expect(repository.findChargeableGroups).not.toHaveBeenCalled();
+    });
+
+    it('422 на скидку по месяцу из закрытого периода', async () => {
+      await expect(
+        service.updateCharge(CHARGE_ID, { discount: 100, discountReason: 'скидка' }),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.updateCharge).not.toHaveBeenCalled();
+    });
+
+    it('422 на удаление начисления из закрытого периода', async () => {
+      await expect(service.removeCharge(CHARGE_ID, { reason: 'ошибка' })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.deleteCharge).not.toHaveBeenCalled();
+    });
+
+    it('422 на платёж, датированный закрытым днём', async () => {
+      await expect(
+        service.pay({ chargeId: CHARGE_ID, amount: 500, paidAt: '2026-08-15' }, ACCOUNT_ID),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.createTransaction).not.toHaveBeenCalled();
+    });
+
+    it('422 на предоплату, датированную закрытым днём', async () => {
+      await expect(
+        service.prepay({ studentId: STUDENT_ID, amount: 500, paidAt: '2026-08-15' }, ACCOUNT_ID),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.createTransaction).not.toHaveBeenCalled();
+    });
+
+    it('422 на отмену платежа из закрытого периода', async () => {
+      await expect(
+        service.removeTransaction(TRANSACTION_ID, { reason: 'ошибка' }),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.deleteTransaction).not.toHaveBeenCalled();
+    });
+
+    it('**платёж открытым днём по месяцу из архива принимается**', async () => {
+      // Главное следствие правила: деньги пришли сегодня, и в кассу они
+      // попадают сегодняшним днём. Закрыт только август-сентябрь, платёж
+      // датирован декабрём, а месяц начисления — сентябрь.
+      repository.findArchivedPeriodForMonth.mockImplementation((month: Date) =>
+        Promise.resolve(month.getTime() === AUGUST.getTime() ? archived : null),
+      );
+
+      await service.pay({ chargeId: CHARGE_ID, amount: 500, paidAt: '2026-12-05' }, ACCOUNT_ID);
+
+      expect(repository.createTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ chargeId: CHARGE_ID }),
+      );
+      // Проверка идёт по дню платежа, а не по месяцу начисления.
+      expect(repository.findArchivedPeriodForMonth).toHaveBeenCalledWith(
+        new Date('2026-12-01T00:00:00.000Z'),
+      );
+    });
+
+    it('перенести платёж **в** закрытый период нельзя', async () => {
+      repository.findTransactionById.mockResolvedValue(
+        transaction({ paidAt: new Date('2026-12-05T00:00:00.000Z') }),
+      );
+      repository.findArchivedPeriodForMonth.mockImplementation((month: Date) =>
+        Promise.resolve(month.getTime() === AUGUST.getTime() ? archived : null),
+      );
+
+      await expect(
+        service.updateTransaction(
+          TRANSACTION_ID,
+          { paidAt: '2026-08-15', reason: 'перенос' },
+          ACCOUNT_ID,
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.updateTransaction).not.toHaveBeenCalled();
     });
   });
 });

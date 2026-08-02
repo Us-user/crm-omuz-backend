@@ -4,6 +4,7 @@ import type { INestApplication } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import {
+  AccountingPeriodStatus,
   AccountType,
   BudgetStatus,
   DirectoryStatus,
@@ -17,6 +18,11 @@ import request from 'supertest';
 import { AccountingModule } from 'src/accounting/accounting.module';
 import { ChargeStatus } from 'src/accounting/accounting';
 import type {
+  AccountingPeriodCloseInput,
+  AccountingPeriodCreateInput,
+  AccountingPeriodListParams,
+  AccountingPeriodRow,
+  AccountingPeriodUpdateInput,
   BudgetCreateInput,
   BudgetListParams,
   BudgetRow,
@@ -58,7 +64,8 @@ import type {
   GroupRef,
   MoneyFact,
 } from 'src/accounting/overview';
-import { SalarySortField } from 'src/accounting/dto';
+import { AccountingPeriodSortField, SalarySortField } from 'src/accounting/dto';
+import type { PeriodFacts } from 'src/accounting/periods';
 import type { SalaryDayFact } from 'src/accounting/salary';
 import { AuthModule } from 'src/auth/auth.module';
 import { AuthRepository } from 'src/auth/auth.repository';
@@ -256,6 +263,20 @@ interface StoredSalary {
   createdAt: Date;
 }
 
+/** Финансовый период-отчёт: границы, состояние и снимок (0033). */
+interface StoredPeriod {
+  id: string;
+  name: string;
+  description: string | null;
+  periodFrom: Date;
+  periodTo: Date;
+  status: AccountingPeriodStatus;
+  /** `null` — период в работе, снимка нет. */
+  snapshot: PeriodFacts | null;
+  closedAt: Date | null;
+  createdAt: Date;
+}
+
 interface StoredSalaryTransaction {
   id: string;
   salaryId: string;
@@ -295,6 +316,7 @@ class InMemoryStore {
   private readonly approvedAvans: StoredApprovedAvans[] = [];
   private readonly salaries = new Map<string, StoredSalary>();
   private readonly salaryTransactions = new Map<string, StoredSalaryTransaction>();
+  private readonly periods = new Map<string, StoredPeriod>();
 
   // ─────────────────────────── Засев данных ────────────────────────────────
 
@@ -1820,6 +1842,207 @@ class InMemoryStore {
       createdBy: null,
       editedBy: null,
     } as unknown as TransactionRow;
+  }
+  // ───────────── Финансовые периоды-отчёты (ТЗ 5.16, сессия 0033) ───────────
+
+  /** Сколько периодов заведено — им проверяется «а не записалось ли». */
+  periodCount(): number {
+    return this.periods.size;
+  }
+
+  findManyPeriods(
+    params: AccountingPeriodListParams,
+  ): Promise<{ rows: AccountingPeriodRow[]; total: number }> {
+    const rows = [...this.periods.values()]
+      .filter((period) => params.status === undefined || period.status === params.status)
+      // Пересечение отрезков — то же правило, что в БД.
+      .filter((period) => params.to === undefined || period.periodFrom <= params.to)
+      .filter((period) => params.from === undefined || period.periodTo >= params.from)
+      .filter(
+        (period) =>
+          params.search === undefined ||
+          period.name.toLowerCase().includes(params.search.toLowerCase()),
+      )
+      .sort((a, b) =>
+        params.sort === AccountingPeriodSortField.Name
+          ? a.name.localeCompare(b.name)
+          : b.periodFrom.getTime() - a.periodFrom.getTime() || a.id.localeCompare(b.id),
+      );
+
+    return Promise.resolve({
+      rows: rows.slice(params.skip, params.skip + params.take).map((row) => this.periodRow(row)),
+      total: rows.length,
+    });
+  }
+
+  findPeriodById(id: string): Promise<AccountingPeriodRow | null> {
+    const period = this.periods.get(id);
+
+    return Promise.resolve(period === undefined ? null : this.periodRow(period));
+  }
+
+  findPeriodByName(name: string): Promise<{ id: string; name: string } | null> {
+    const twin = [...this.periods.values()].find(
+      (period) => period.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    return Promise.resolve(twin === undefined ? null : { id: twin.id, name: twin.name });
+  }
+
+  findOverlappingPeriod(
+    from: Date,
+    to: Date,
+    exceptId?: string,
+  ): Promise<{ id: string; name: string; periodFrom: Date; periodTo: Date } | null> {
+    const clash = [...this.periods.values()].find(
+      (period) => period.id !== exceptId && period.periodFrom <= to && period.periodTo >= from,
+    );
+
+    return Promise.resolve(
+      clash === undefined
+        ? null
+        : {
+            id: clash.id,
+            name: clash.name,
+            periodFrom: clash.periodFrom,
+            periodTo: clash.periodTo,
+          },
+    );
+  }
+
+  /** Запрос, на котором держится вся защита кассы от правок задним числом. */
+  findArchivedPeriodForMonth(
+    month: Date,
+  ): Promise<{ id: string; name: string; periodFrom: Date; periodTo: Date } | null> {
+    const period = [...this.periods.values()].find(
+      (row) =>
+        row.status === AccountingPeriodStatus.ARCHIVED &&
+        row.periodFrom <= month &&
+        row.periodTo >= month,
+    );
+
+    return Promise.resolve(
+      period === undefined
+        ? null
+        : {
+            id: period.id,
+            name: period.name,
+            periodFrom: period.periodFrom,
+            periodTo: period.periodTo,
+          },
+    );
+  }
+
+  createPeriod(input: AccountingPeriodCreateInput): Promise<AccountingPeriodRow> {
+    const id = randomUUID();
+    this.periods.set(id, {
+      id,
+      name: input.name,
+      description: input.description,
+      periodFrom: input.periodFrom,
+      periodTo: input.periodTo,
+      status: AccountingPeriodStatus.IN_PROGRESS,
+      snapshot: null,
+      closedAt: null,
+      createdAt: new Date(),
+    });
+
+    return Promise.resolve(this.periodRow(this.periods.get(id) as StoredPeriod));
+  }
+
+  updatePeriod(id: string, input: AccountingPeriodUpdateInput): Promise<AccountingPeriodRow> {
+    const period = this.periods.get(id) as StoredPeriod;
+    if (input.name !== undefined) period.name = input.name;
+    if (input.description !== undefined) period.description = input.description;
+    if (input.periodFrom !== undefined) period.periodFrom = input.periodFrom;
+    if (input.periodTo !== undefined) period.periodTo = input.periodTo;
+
+    return Promise.resolve(this.periodRow(period));
+  }
+
+  /** Снимок пишется целиком вместе со статусом — как одна запись в БД. */
+  closePeriod(id: string, input: AccountingPeriodCloseInput): Promise<AccountingPeriodRow> {
+    const period = this.periods.get(id) as StoredPeriod;
+    period.status = AccountingPeriodStatus.ARCHIVED;
+    period.snapshot = { ...input.facts };
+    period.closedAt = input.closedAt;
+
+    return Promise.resolve(this.periodRow(period));
+  }
+
+  reopenPeriod(id: string): Promise<AccountingPeriodRow> {
+    const period = this.periods.get(id) as StoredPeriod;
+    period.status = AccountingPeriodStatus.IN_PROGRESS;
+    period.snapshot = null;
+    period.closedAt = null;
+
+    return Promise.resolve(this.periodRow(period));
+  }
+
+  deletePeriod(id: string): Promise<void> {
+    this.periods.delete(id);
+
+    return Promise.resolve();
+  }
+
+  sumIncome(from: Date, to: Date): Promise<number> {
+    return Promise.resolve(
+      [...this.transactions.values()]
+        .filter((row) => row.paidAt >= from && row.paidAt < to)
+        .reduce((total, row) => total + row.amountCents, 0),
+    );
+  }
+
+  sumExpenses(from: Date, to: Date): Promise<number> {
+    return Promise.resolve(
+      [...this.expenses.values()]
+        .filter((row) => row.spentAt >= from && row.spentAt < to)
+        .reduce((total, row) => total + row.amountCents, 0),
+    );
+  }
+
+  findMonthlyChargeTotals(
+    from: Date,
+    to: Date,
+  ): Promise<{ month: Date; chargedCents: number; paidCents: number }[]> {
+    const byMonth = new Map<number, { month: Date; chargedCents: number; paidCents: number }>();
+
+    for (const charge of this.charges.values()) {
+      if (charge.month < from || charge.month >= to) continue;
+
+      const bucket = byMonth.get(charge.month.getTime()) ?? {
+        month: charge.month,
+        chargedCents: 0,
+        paidCents: 0,
+      };
+      bucket.chargedCents += Math.max(0, charge.amountCents - charge.discountCents);
+      bucket.paidCents += charge.paidCents;
+      byMonth.set(charge.month.getTime(), bucket);
+    }
+
+    return Promise.resolve([...byMonth.values()]);
+  }
+
+  private periodRow(period: StoredPeriod): AccountingPeriodRow {
+    const snapshot = period.snapshot;
+
+    return {
+      id: period.id,
+      name: period.name,
+      description: period.description,
+      periodFrom: period.periodFrom,
+      periodTo: period.periodTo,
+      status: period.status,
+      charged: snapshot === null ? null : new Prisma.Decimal(money(snapshot.chargedCents)),
+      paid: snapshot === null ? null : new Prisma.Decimal(money(snapshot.paidCents)),
+      income: snapshot === null ? null : new Prisma.Decimal(money(snapshot.incomeCents)),
+      expense: snapshot === null ? null : new Prisma.Decimal(money(snapshot.expenseCents)),
+      salary: snapshot === null ? null : new Prisma.Decimal(money(snapshot.salaryCents)),
+      closedAt: period.closedAt,
+      createdAt: period.createdAt,
+      closedBy: null,
+      createdBy: null,
+    };
   }
 }
 
@@ -4094,6 +4317,378 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
     });
   });
 
+  // ══════════ Финансовые периоды-отчёты (ТЗ 5.16, сессия 0033) ═══════════════
+
+  describe('Финансовые периоды', () => {
+    /** Ведёт отчётность: закрывает периоды, но кассу не трогает. */
+    const closer = async () =>
+      (await actor(['Permission.Accounting.Views', 'Permission.Accounting.ManagePeriods'])).token;
+
+    /** Полные права: и касса, и расходы, и периоды — им проверяется запрет. */
+    const chief = async () =>
+      (
+        await actor([
+          'Permission.Accounting.Views',
+          'Permission.Accounting.ManagePayments',
+          'Permission.Accounting.ManageExpenses',
+          'Permission.Accounting.ManagePeriods',
+        ])
+      ).token;
+
+    const createPeriod = async (
+      token: string,
+      body: { name: string; periodFrom: string; periodTo: string },
+    ): Promise<{ id: string }> =>
+      dataOf<{ id: string }>(
+        await send('post', '/api/v1/accounting/periods', token, body).expect(201),
+      );
+
+    const q3 = { name: 'III квартал 2026', periodFrom: '2026-07', periodTo: '2026-09' };
+
+    it('заводит период, и числа отчёта считаются на лету', async () => {
+      const token = await chief();
+      const { groupId } = seedGroup();
+
+      await chargeMonth(token, '2026-08', groupId);
+      const { id } = await createPeriod(token, q3);
+
+      const period = dataOf<{
+        months: number;
+        status: string;
+        frozen: boolean;
+        report: { charged: number; paid: number; debt: number; net: number };
+      }>(await get(`/api/v1/accounting/periods/${id}`, token).expect(200));
+
+      expect(period).toMatchObject({
+        months: 3,
+        status: 'IN_PROGRESS',
+        frozen: false,
+        report: { charged: 1200, paid: 0, debt: 1200, net: 0 },
+      });
+    });
+
+    it('**закрытие замораживает отчёт: правка кассы задним числом его не двигает**', async () => {
+      // Главное свойство раздела, проверенное настоящими маршрутами.
+      const token = await chief();
+      const categoryId = store.seedCategory();
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда за август',
+        amount: 300,
+        spentAt: '2026-08-05',
+      }).expect(201);
+
+      const { id } = await createPeriod(token, q3);
+      const closed = dataOf<{ frozen: boolean; report: { expense: number; net: number } }>(
+        await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200),
+      );
+
+      expect(closed).toMatchObject({ frozen: true, report: { expense: 300, net: -300 } });
+
+      // Пока период закрыт, расход внутрь не проходит; снимаем закрытие,
+      // проводим второй — и после нового закрытия отчёт пересобран.
+      await send('delete', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Ещё аренда',
+        amount: 500,
+        spentAt: '2026-08-06',
+      }).expect(201);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      const again = dataOf<{ report: { expense: number } }>(
+        await get(`/api/v1/accounting/periods/${id}`, token).expect(200),
+      );
+      expect(again.report.expense).toBe(800);
+    });
+
+    it('**архивный период не принимает расход, датированный внутри него**', async () => {
+      const token = await chief();
+      const categoryId = store.seedCategory();
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      const response = await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда задним числом',
+        amount: 300,
+        spentAt: '2026-08-15',
+      }).expect(422);
+
+      expect((response.body as { error: { message: string } }).error.message).toContain(
+        'III квартал 2026',
+      );
+      expect(store.expenseCount()).toBe(0);
+    });
+
+    it('**закрытие снимается — и запись снова проходит**', async () => {
+      const token = await chief();
+      const categoryId = store.seedCategory();
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      const body = { categoryId, title: 'Аренда', amount: 300, spentAt: '2026-08-15' };
+      await send('post', '/api/v1/accounting/expenses', token, body).expect(422);
+
+      await send('delete', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+      await send('post', '/api/v1/accounting/expenses', token, body).expect(201);
+
+      expect(store.expenseCount()).toBe(1);
+    });
+
+    it('архивный период не принимает начисление своего месяца', async () => {
+      const token = await chief();
+      const { groupId } = seedGroup();
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      await send('post', '/api/v1/accounting/payments/charges', token, {
+        month: '2026-08',
+        groupId,
+      }).expect(422);
+
+      expect(store.chargeCount()).toBe(0);
+    });
+
+    it('**платёж открытым днём по месяцу из архива принимается**', async () => {
+      // Следствие правила «проверяется дата операции»: долг за закрытый
+      // квартал гасится сегодняшним платежом, и открывать период не нужно.
+      const token = await chief();
+      const { groupId } = seedGroup();
+      const charge = await chargeMonth(token, '2026-08', groupId);
+
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      await send('post', '/api/v1/accounting/payments', token, {
+        chargeId: charge.id,
+        amount: 500,
+        paidAt: '2026-12-05',
+      }).expect(201);
+
+      expect(store.transactionCount()).toBe(1);
+    });
+
+    it('а тот же платёж днём внутри архива — 422', async () => {
+      const token = await chief();
+      const { groupId } = seedGroup();
+      const charge = await chargeMonth(token, '2026-08', groupId);
+
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      await send('post', '/api/v1/accounting/payments', token, {
+        chargeId: charge.id,
+        amount: 500,
+        paidAt: '2026-09-05',
+      }).expect(422);
+
+      expect(store.transactionCount()).toBe(0);
+    });
+
+    it('**периоды не пересекаются — 422 с названием мешающего**', async () => {
+      const token = await closer();
+      await createPeriod(token, q3);
+
+      const response = await send('post', '/api/v1/accounting/periods', token, {
+        name: 'Сентябрь 2026',
+        periodFrom: '2026-09',
+        periodTo: '2026-09',
+      }).expect(422);
+
+      expect((response.body as { error: { message: string } }).error.message).toContain(
+        'пересекается с «III квартал 2026»',
+      );
+      expect(store.periodCount()).toBe(1);
+    });
+
+    it('соседние периоды пересечением не считаются', async () => {
+      const token = await closer();
+      await createPeriod(token, q3);
+      await createPeriod(token, {
+        name: 'IV квартал 2026',
+        periodFrom: '2026-10',
+        periodTo: '2026-12',
+      });
+
+      expect(store.periodCount()).toBe(2);
+    });
+
+    it('пустой период закрывается: «операций не было» — законный отчёт', async () => {
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+
+      const closed = dataOf<{ frozen: boolean; report: { net: number } }>(
+        await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200),
+      );
+
+      expect(closed).toMatchObject({ frozen: true, report: { net: 0 } });
+    });
+
+    it('409 на повторное закрытие, 422 на снятие с незакрытого', async () => {
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+
+      await send('delete', `/api/v1/accounting/periods/${id}/close`, token).expect(422);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(409);
+    });
+
+    it('закрытый период не правится и не удаляется, но после снятия — оба действия', async () => {
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      await send('put', `/api/v1/accounting/periods/${id}`, token, { name: 'Q3 2026' }).expect(422);
+      await send('delete', `/api/v1/accounting/periods/${id}`, token).expect(422);
+
+      await send('delete', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+      await send('put', `/api/v1/accounting/periods/${id}`, token, { name: 'Q3 2026' }).expect(200);
+      await send('delete', `/api/v1/accounting/periods/${id}`, token).expect(200);
+
+      expect(store.periodCount()).toBe(0);
+    });
+
+    it('409 на тёзку без учёта регистра', async () => {
+      const token = await closer();
+      await createPeriod(token, q3);
+
+      await send('post', '/api/v1/accounting/periods', token, {
+        name: 'iii КВАРТАЛ 2026',
+        periodFrom: '2027-01',
+        periodTo: '2027-03',
+      }).expect(409);
+    });
+
+    it('400 на перевёрнутый и на слишком длинный период', async () => {
+      const token = await closer();
+
+      await send('post', '/api/v1/accounting/periods', token, {
+        name: 'Наоборот',
+        periodFrom: '2026-09',
+        periodTo: '2026-07',
+      }).expect(400);
+
+      await send('post', '/api/v1/accounting/periods', token, {
+        name: 'Слишком длинный',
+        periodFrom: '2020-01',
+        periodTo: '2026-01',
+      }).expect(400);
+
+      expect(store.periodCount()).toBe(0);
+    });
+
+    it('фильтр отбирает периоды по пересечению с отрезком', async () => {
+      const token = await closer();
+      await createPeriod(token, q3);
+      await createPeriod(token, {
+        name: 'I квартал 2026',
+        periodFrom: '2026-01',
+        periodTo: '2026-03',
+      });
+
+      const page = dataOf<{ name: string }[]>(
+        await get('/api/v1/accounting/periods?from=2026-09&to=2026-12', token).expect(200),
+      );
+
+      expect(page.map((row) => row.name)).toEqual(['III квартал 2026']);
+    });
+
+    it('закрытый период читается из снимка и виден фильтром по статусу', async () => {
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      const page = dataOf<{ frozen: boolean; statusTitle: string }[]>(
+        await get('/api/v1/accounting/periods?status=ARCHIVED', token).expect(200),
+      );
+
+      expect(page).toHaveLength(1);
+      expect(page[0]).toMatchObject({ frozen: true, statusTitle: 'Закрыт' });
+    });
+
+    // ─────────────────────────────── Выгрузка ────────────────────────────────
+
+    it('**выгрузка отдаёт CSV с BOM мимо `{ data }`, строкой на месяц и итогом**', async () => {
+      const token = await chief();
+      const categoryId = store.seedCategory();
+      const { groupId } = seedGroup();
+
+      await chargeMonth(token, '2026-08', groupId);
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда',
+        amount: 300,
+        spentAt: '2026-09-05',
+      }).expect(201);
+
+      const { id } = await createPeriod(token, q3);
+      const response = await get(`/api/v1/accounting/periods/${id}/export`, token).expect(200);
+
+      expect(response.headers['content-type']).toContain('text/csv');
+      expect(response.headers['content-disposition']).toContain('accounting-period-2026-07');
+      expect(response.text.startsWith('﻿')).toBe(true);
+
+      const lines = response.text.replace('﻿', '').trim().split('\r\n');
+      expect(lines[0]).toBe('Месяц,Начислено,Оплачено,Долг,Приход,Расход,Зарплата,Итог');
+      // Июль без операций остаётся в файле нулями, а не пропадает.
+      expect(lines[1]).toBe('2026-07,0.00,0.00,0.00,0.00,0.00,0.00,0.00');
+      expect(lines[2]).toBe('2026-08,1200.00,0.00,1200.00,0.00,0.00,0.00,0.00');
+      expect(lines[3]).toBe('2026-09,0.00,0.00,0.00,0.00,300.00,0.00,-300.00');
+      expect(lines[4]).toBe('Итого,1200.00,0.00,1200.00,0.00,300.00,0.00,-300.00');
+    });
+
+    it('итог выгрузки закрытого периода берётся из снимка', async () => {
+      const token = await chief();
+      const categoryId = store.seedCategory();
+      const { id } = await createPeriod(token, q3);
+
+      await send('post', '/api/v1/accounting/expenses', token, {
+        categoryId,
+        title: 'Аренда',
+        amount: 300,
+        spentAt: '2026-09-05',
+      }).expect(201);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, token).expect(200);
+
+      const response = await get(`/api/v1/accounting/periods/${id}/export`, token).expect(200);
+      const lines = response.text.replace('﻿', '').trim().split('\r\n');
+
+      expect(lines.at(-1)).toBe('Итого,0.00,0.00,0.00,0.00,300.00,0.00,-300.00');
+    });
+
+    // ─────────────────────────────── Доступ ──────────────────────────────────
+
+    it('право на просмотр не даёт заводить и закрывать периоды', async () => {
+      const view = await viewer();
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+
+      await get('/api/v1/accounting/periods', view).expect(200);
+      await send('post', '/api/v1/accounting/periods', view, {
+        name: 'Ещё один',
+        periodFrom: '2027-01',
+        periodTo: '2027-03',
+      }).expect(403);
+      await send('post', `/api/v1/accounting/periods/${id}/close`, view).expect(403);
+    });
+
+    it('право на оплаты периодами не заведует, а выгрузка открыта `Views`', async () => {
+      const token = await closer();
+      const { id } = await createPeriod(token, q3);
+
+      await send('post', `/api/v1/accounting/periods/${id}/close`, await cashier()).expect(403);
+      // Персональных данных в отчёте нет — только сводные числа с экрана.
+      await get(`/api/v1/accounting/periods/${id}/export`, await viewer()).expect(200);
+    });
+
+    it('403 студенту и сотруднику без прав', async () => {
+      await get('/api/v1/accounting/periods', await studentToken()).expect(403);
+      await get('/api/v1/accounting/periods', (await actor([])).token).expect(403);
+    });
+  });
+
   describe('OpenAPI', () => {
     it('пути платёжного контура описаны, а у должников только чтение', () => {
       const document = buildOpenApiDocument(app) as unknown as {
@@ -4112,6 +4707,7 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
           '/api/v1/accounting/expense-categories',
           '/api/v1/accounting/budget',
           '/api/v1/accounting/salary',
+          '/api/v1/accounting/periods',
           '/api/v1/accounting/overview',
         ]),
       );
@@ -4151,6 +4747,54 @@ describe('Бухгалтерия: оплаты и должники (ТЗ 5.16)',
         'post',
       ]);
       expect(Object.keys(document.paths['/api/v1/accounting/salary/{id}/pay'])).toEqual(['post']);
+
+      // Периоды: чтение и заведение отчёта.
+      expect(Object.keys(document.paths['/api/v1/accounting/periods']).sort()).toEqual([
+        'get',
+        'post',
+      ]);
+      // У периода нет `post` — закрытие стоит своим путём.
+      expect(Object.keys(document.paths['/api/v1/accounting/periods/{id}']).sort()).toEqual([
+        'delete',
+        'get',
+        'put',
+      ]);
+      // Закрытие снимается тем же путём, что ставится (сверх перечня ТЗ).
+      expect(Object.keys(document.paths['/api/v1/accounting/periods/{id}/close']).sort()).toEqual([
+        'delete',
+        'post',
+      ]);
+      // Выгрузка только читает.
+      expect(Object.keys(document.paths['/api/v1/accounting/periods/{id}/export'])).toEqual([
+        'get',
+      ]);
+    });
+
+    it('заведение периода отвечает 201, закрытие — 200, а выгрузка описана как CSV', () => {
+      const document = buildOpenApiDocument(app) as unknown as {
+        paths: Record<
+          string,
+          Record<string, { responses: Record<string, { content?: Record<string, unknown> }> }>
+        >;
+      };
+
+      expect(Object.keys(document.paths['/api/v1/accounting/periods'].post.responses)).toContain(
+        '201',
+      );
+
+      // Закрытие ничего не создаёт по адресу — 200, а не 201 (правило 0013, 0018).
+      const close = Object.keys(
+        document.paths['/api/v1/accounting/periods/{id}/close'].post.responses,
+      );
+      expect(close).toContain('200');
+      expect(close).not.toContain('201');
+
+      expect(
+        Object.keys(
+          document.paths['/api/v1/accounting/periods/{id}/export'].get.responses['200'].content ??
+            {},
+        ),
+      ).toContain('text/csv');
     });
 
     it('формирование ведомости и выплата отвечают 201, подтверждение — 200', () => {

@@ -4,6 +4,7 @@ import { DirectoryStatus, Prisma } from '@prisma/client';
 import { BusinessRuleException } from '../common';
 import type { AccountingRepository, ExpenseCategoryRow, ExpenseRow } from './accounting.repository';
 import { ExpensesQueryDto } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 import { ExpensesService } from './expenses.service';
 
 const EXPENSE_ID = '11111111-1111-1111-1111-111111111111';
@@ -53,6 +54,7 @@ describe('ExpensesService', () => {
       | 'findChildCategoryIds'
       | 'findBranchById'
       | 'findEmployeeByAccount'
+      | 'findArchivedPeriodForMonth'
     >
   >;
   let service: ExpensesService;
@@ -70,9 +72,14 @@ describe('ExpensesService', () => {
         .fn()
         .mockResolvedValue({ id: BRANCH_ID, name: 'Sadbarg', status: 'ACTIVE' }),
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
+      // По умолчанию закрытых периодов нет — правило 0033 проверяется отдельно.
+      findArchivedPeriodForMonth: jest.fn().mockResolvedValue(null),
     };
 
-    service = new ExpensesService(repository as unknown as AccountingRepository);
+    service = new ExpensesService(
+      repository as unknown as AccountingRepository,
+      new PeriodGuardService(repository as unknown as AccountingRepository),
+    );
   });
 
   describe('список', () => {
@@ -281,6 +288,71 @@ describe('ExpensesService', () => {
         NotFoundException,
       );
       expect(repository.deleteExpense).not.toHaveBeenCalled();
+    });
+  });
+  // ────────────── Закрытый финансовый период (решение 0033) ──────────────────
+
+  describe('закрытый период', () => {
+    const archived = {
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'III квартал 2026',
+      periodFrom: new Date('2026-07-01T00:00:00.000Z'),
+      periodTo: new Date('2026-09-01T00:00:00.000Z'),
+    };
+
+    beforeEach(() => {
+      repository.findArchivedPeriodForMonth.mockResolvedValue(archived);
+    });
+
+    it('422 на расход, датированный закрытым периодом, — и он не заведён', async () => {
+      await expect(
+        service.create(
+          { categoryId: CATEGORY_ID, title: 'Аренда', amount: 4500, spentAt: '2026-08-15' },
+          ACCOUNT_ID,
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.createExpense).not.toHaveBeenCalled();
+    });
+
+    it('отказ приходит до проверки категории и филиала', async () => {
+      await expect(
+        service.create(
+          { categoryId: CATEGORY_ID, title: 'Аренда', amount: 4500, spentAt: '2026-08-15' },
+          ACCOUNT_ID,
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleException);
+      expect(repository.findCategoryById).not.toHaveBeenCalled();
+    });
+
+    it('422 на правку расхода из закрытого периода', async () => {
+      await expect(service.update(EXPENSE_ID, { amount: 5000 })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.updateExpense).not.toHaveBeenCalled();
+    });
+
+    it('422 на удаление расхода из закрытого периода', async () => {
+      await expect(service.remove(EXPENSE_ID, { reason: 'ошибка' })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.deleteExpense).not.toHaveBeenCalled();
+    });
+
+    it('перенести открытый расход **в** закрытый период тоже нельзя', async () => {
+      // Расход лежит в открытом декабре, переносят в закрытый август.
+      repository.findExpenseById.mockResolvedValue(
+        row({ spentAt: new Date('2026-12-05T00:00:00.000Z') }),
+      );
+      repository.findArchivedPeriodForMonth.mockImplementation((month: Date) =>
+        Promise.resolve(
+          month.getTime() === new Date('2026-08-01T00:00:00.000Z').getTime() ? archived : null,
+        ),
+      );
+
+      await expect(service.update(EXPENSE_ID, { spentAt: '2026-08-15' })).rejects.toBeInstanceOf(
+        BusinessRuleException,
+      );
+      expect(repository.updateExpense).not.toHaveBeenCalled();
     });
   });
 });

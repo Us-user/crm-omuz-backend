@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { BudgetStatus, DirectoryStatus, Prisma, SalaryStatus } from '@prisma/client';
+import type {
+  AccountingPeriodStatus,
+  BudgetStatus,
+  DirectoryStatus,
+  Prisma,
+  SalaryStatus,
+} from '@prisma/client';
 import { AvansStatus, GroupStatus, GroupStudentStatus } from '@prisma/client';
 
 import type { SortOrder } from '../common';
@@ -7,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { DebtorChargeTotals, DebtorDebt } from './accounting';
 import { ChargeStatus, dueCentsOf, toCents } from './accounting';
 import {
+  AccountingPeriodSortField,
   BudgetSortField,
   ChargeSortField,
   ExpenseSortField,
@@ -15,6 +22,7 @@ import {
   TransactionSortField,
 } from './dto';
 import type { CategoryNode, ExpenseFact, GroupChargeFact, GroupRef, MoneyFact } from './overview';
+import type { PeriodFacts } from './periods';
 import type { SalaryDayFact } from './salary';
 
 // ───────────────────────────── Выборки строк ─────────────────────────────────
@@ -186,6 +194,33 @@ const SALARY_TRANSACTION_SELECT = {
 
 export type SalaryTransactionRow = Prisma.SalaryTransactionGetPayload<{
   select: typeof SALARY_TRANSACTION_SELECT;
+}>;
+
+/**
+ * Финансовый период-отчёт (ТЗ 5.16). Снимок (`charged`…`salary`) отдаётся
+ * вместе со строкой: у закрытого периода числа берутся из него, а не считаются
+ * заново, — в этом весь смысл закрытия.
+ */
+const ACCOUNTING_PERIOD_SELECT = {
+  id: true,
+  name: true,
+  description: true,
+  periodFrom: true,
+  periodTo: true,
+  status: true,
+  charged: true,
+  paid: true,
+  income: true,
+  expense: true,
+  salary: true,
+  closedAt: true,
+  createdAt: true,
+  closedBy: { select: { id: true, firstName: true, lastName: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
+} satisfies Prisma.AccountingPeriodSelect;
+
+export type AccountingPeriodRow = Prisma.AccountingPeriodGetPayload<{
+  select: typeof ACCOUNTING_PERIOD_SELECT;
 }>;
 
 /** Карточка начисления: та же строка плюс платежи, которые её закрывают. */
@@ -452,6 +487,44 @@ export interface SalaryTransactionInput {
   typeId: string;
   comment: string | null;
   createdById: string | null;
+}
+
+/**
+ * Отбор периодов-отчётов. `from`/`to` — отрезок, с которым период должен
+ * **пересекаться** (тот же приём, что у бюджетов, 0031).
+ */
+export interface AccountingPeriodListParams {
+  status?: AccountingPeriodStatus;
+  from?: Date;
+  to?: Date;
+  search?: string;
+  sort: AccountingPeriodSortField;
+  order: SortOrder;
+  skip: number;
+  take: number;
+}
+
+export interface AccountingPeriodCreateInput {
+  name: string;
+  description: string | null;
+  periodFrom: Date;
+  periodTo: Date;
+  createdById: string | null;
+}
+
+/** `undefined` — колонку не менять; значение (включая `null`) — записать. */
+export interface AccountingPeriodUpdateInput {
+  name?: string;
+  description?: string | null;
+  periodFrom?: Date;
+  periodTo?: Date;
+}
+
+/** Что заморозить при закрытии периода (ТЗ 5.16). */
+export interface AccountingPeriodCloseInput {
+  facts: PeriodFacts;
+  closedAt: Date;
+  closedById: string | null;
 }
 
 /** Ступень месяца сотрудника — из неё берётся часовая ставка (ТЗ 5.14, 0021). */
@@ -1883,6 +1956,226 @@ export class AccountingRepository {
     return this.prisma.employee.findUnique({
       where: { id },
       select: { id: true, firstName: true, lastName: true, status: true },
+    });
+  }
+
+  // ────────────────── Финансовые периоды-отчёты (ТЗ 5.16) ───────────────────
+
+  async findManyPeriods(
+    params: AccountingPeriodListParams,
+  ): Promise<{ rows: AccountingPeriodRow[]; total: number }> {
+    // Пересечение отрезков — как у бюджетов (0031): «какие отчёты покрывают
+    // март» не тот же вопрос, что «какие начались в марте».
+    const where: Prisma.AccountingPeriodWhereInput = {
+      ...(params.status === undefined ? {} : { status: params.status }),
+      ...(params.to === undefined ? {} : { periodFrom: { lte: params.to } }),
+      ...(params.from === undefined ? {} : { periodTo: { gte: params.from } }),
+      ...(params.search === undefined
+        ? {}
+        : {
+            OR: [
+              { name: { contains: params.search, mode: 'insensitive' } },
+              { description: { contains: params.search, mode: 'insensitive' } },
+            ],
+          }),
+    };
+
+    const orderBy: Prisma.AccountingPeriodOrderByWithRelationInput[] =
+      params.sort === AccountingPeriodSortField.Name
+        ? [{ name: params.order }]
+        : params.sort === AccountingPeriodSortField.CreatedAt
+          ? [{ createdAt: params.order }]
+          : // По умолчанию — свежие периоды сверху; внутри месяца порядок
+            // закреплён идентификатором, иначе строка приходила бы на двух
+            // страницах подряд (приём сессии 0024).
+            [{ periodFrom: params.order }, { id: 'asc' }];
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.accountingPeriod.findMany({
+        where,
+        select: ACCOUNTING_PERIOD_SELECT,
+        orderBy,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.accountingPeriod.count({ where }),
+    ]);
+
+    return { rows, total };
+  }
+
+  findPeriodById(id: string): Promise<AccountingPeriodRow | null> {
+    return this.prisma.accountingPeriod.findUnique({
+      where: { id },
+      select: ACCOUNTING_PERIOD_SELECT,
+    });
+  }
+
+  /** Тёзка без учёта регистра — как во всех справочниках проекта. */
+  findPeriodByName(name: string): Promise<{ id: string; name: string } | null> {
+    return this.prisma.accountingPeriod.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+      select: { id: true, name: true },
+    });
+  }
+
+  /**
+   * Период, чьи месяцы пересекаются с отрезком, — на нём держится правило
+   * «периоды отчётности не пересекаются». `exceptId` нужен правке: сравнивать
+   * период сам с собой бессмысленно.
+   */
+  findOverlappingPeriod(
+    from: Date,
+    to: Date,
+    exceptId?: string,
+  ): Promise<{ id: string; name: string; periodFrom: Date; periodTo: Date } | null> {
+    return this.prisma.accountingPeriod.findFirst({
+      where: {
+        periodFrom: { lte: to },
+        periodTo: { gte: from },
+        ...(exceptId === undefined ? {} : { id: { not: exceptId } }),
+      },
+      select: { id: true, name: true, periodFrom: true, periodTo: true },
+    });
+  }
+
+  /**
+   * Закрытый период, накрывающий этот месяц, — **единственный** запрос, на
+   * котором держится вся защита кассы от правок задним числом (решение
+   * пользователя, 0033). Ложится на индекс `(status, periodFrom, periodTo)`.
+   *
+   * Месяц приходит уже приведённым к первому числу: день операции сводит к нему
+   * `monthStartOf`, а месяц начисления первым числом и хранится.
+   */
+  findArchivedPeriodForMonth(
+    month: Date,
+  ): Promise<{ id: string; name: string; periodFrom: Date; periodTo: Date } | null> {
+    return this.prisma.accountingPeriod.findFirst({
+      where: {
+        status: 'ARCHIVED',
+        periodFrom: { lte: month },
+        periodTo: { gte: month },
+      },
+      select: { id: true, name: true, periodFrom: true, periodTo: true },
+    });
+  }
+
+  createPeriod(input: AccountingPeriodCreateInput): Promise<AccountingPeriodRow> {
+    return this.prisma.accountingPeriod.create({
+      data: {
+        name: input.name,
+        description: input.description,
+        periodFrom: input.periodFrom,
+        periodTo: input.periodTo,
+        createdById: input.createdById,
+      },
+      select: ACCOUNTING_PERIOD_SELECT,
+    });
+  }
+
+  updatePeriod(id: string, input: AccountingPeriodUpdateInput): Promise<AccountingPeriodRow> {
+    return this.prisma.accountingPeriod.update({
+      where: { id },
+      data: {
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.periodFrom === undefined ? {} : { periodFrom: input.periodFrom }),
+        ...(input.periodTo === undefined ? {} : { periodTo: input.periodTo }),
+      },
+      select: ACCOUNTING_PERIOD_SELECT,
+    });
+  }
+
+  /**
+   * Закрытие периода: статус и снимок пишутся **одной** записью. Половина
+   * снимка означала бы закрытый период, у которого приход заморожен, а расход
+   * нет, — тот же приём, что у подтверждения зарплаты (0032).
+   */
+  closePeriod(id: string, input: AccountingPeriodCloseInput): Promise<AccountingPeriodRow> {
+    return this.prisma.accountingPeriod.update({
+      where: { id },
+      data: {
+        status: 'ARCHIVED',
+        charged: money(input.facts.chargedCents),
+        paid: money(input.facts.paidCents),
+        income: money(input.facts.incomeCents),
+        expense: money(input.facts.expenseCents),
+        salary: money(input.facts.salaryCents),
+        closedAt: input.closedAt,
+        closedById: input.closedById,
+      },
+      select: ACCOUNTING_PERIOD_SELECT,
+    });
+  }
+
+  /** Возврат в работу: снимок гасится целиком, числа снова считаются на лету. */
+  reopenPeriod(id: string): Promise<AccountingPeriodRow> {
+    return this.prisma.accountingPeriod.update({
+      where: { id },
+      data: {
+        status: 'IN_PROGRESS',
+        charged: null,
+        paid: null,
+        income: null,
+        expense: null,
+        salary: null,
+        closedAt: null,
+        closedById: null,
+      },
+      select: ACCOUNTING_PERIOD_SELECT,
+    });
+  }
+
+  async deletePeriod(id: string): Promise<void> {
+    await this.prisma.accountingPeriod.delete({ where: { id } });
+  }
+
+  /** Принятые за окно деньги — «income» отчёта, вместе с предоплатами. */
+  async sumIncome(from: Date, to: Date): Promise<number> {
+    const sums = await this.prisma.paymentTransaction.aggregate({
+      where: { paidAt: { gte: from, lt: to } },
+      _sum: { amount: true },
+    });
+
+    return sums._sum.amount === null ? 0 : toCents(sums._sum.amount);
+  }
+
+  /** Расходы за окно — «expense» отчёта, **без** зарплаты (у неё свой источник). */
+  async sumExpenses(from: Date, to: Date): Promise<number> {
+    const sums = await this.prisma.expense.aggregate({
+      where: { spentAt: { gte: from, lt: to } },
+      _sum: { amount: true },
+    });
+
+    return sums._sum.amount === null ? 0 : toCents(sums._sum.amount);
+  }
+
+  /**
+   * Начисления периода в разрезе месяцев — под помесячную раскладку выгрузки.
+   *
+   * Здесь можно обычным `groupBy`: месяц у начисления **хранится** колонкой,
+   * а не выводится из даты, поэтому `date_trunc` не нужен (в отличие от
+   * прихода и расхода, где день приходится сводить к месяцу в памяти, 0030).
+   */
+  async findMonthlyChargeTotals(
+    from: Date,
+    to: Date,
+  ): Promise<{ month: Date; chargedCents: number; paidCents: number }[]> {
+    const groups = await this.prisma.studentPayment.groupBy({
+      by: ['month'],
+      where: { month: { gte: from, lt: to } },
+      _sum: { amount: true, discount: true, paidAmount: true },
+    });
+
+    return groups.map(({ month, _sum }) => {
+      const amount = _sum.amount === null ? 0 : toCents(_sum.amount);
+      const discount = _sum.discount === null ? 0 : toCents(_sum.discount);
+
+      return {
+        month,
+        chargedCents: Math.max(0, amount - discount),
+        paidCents: _sum.paidAmount === null ? 0 : toCents(_sum.paidAmount),
+      };
     });
   }
 

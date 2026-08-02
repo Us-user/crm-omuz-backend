@@ -43,6 +43,7 @@ import type {
   UpdateChargeDto,
   UpdatePaymentDto,
 } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 
 /**
  * Оплаты студентов (ТЗ 5.16: «Payment's», «Оплаты/долги»).
@@ -63,7 +64,10 @@ import type {
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
 
-  constructor(private readonly repository: AccountingRepository) {}
+  constructor(
+    private readonly repository: AccountingRepository,
+    private readonly periods: PeriodGuardService,
+  ) {}
 
   // ─────────────────────── Начисление месяца (ТЗ 5.16) ──────────────────────
 
@@ -81,6 +85,9 @@ export class PaymentsService {
    */
   async chargeMonth(dto: ChargeMonthDto, accountId: string): Promise<ChargeRunResultDto> {
     const month = parseIsoMonth(dto.month, 'month');
+    // Месяц обучения и есть дата, по которой начисление попадает в отчёт,
+    // поэтому проверка идёт по нему, а не по дню запуска (0033).
+    await this.periods.assertMonthOpen(month, 'Начисление месяца');
 
     if (dto.groupId !== undefined) await this.assertGroupChargeable(dto.groupId);
 
@@ -191,6 +198,9 @@ export class PaymentsService {
   /** Скидка на месяц с обязательной причиной и примечание (ТЗ 5.16). */
   async updateCharge(id: string, dto: UpdateChargeDto): Promise<StudentPaymentDto> {
     const charge = await this.requireCharge(id);
+    // Скидка меняет «начислено» закрытого периода — а это число уже в снимке.
+    await this.periods.assertMonthOpen(charge.month, 'Правка начисления');
+
     const discountCents = dto.discount === undefined ? undefined : toCents(dto.discount);
 
     if (discountCents !== undefined) {
@@ -222,6 +232,8 @@ export class PaymentsService {
    */
   async removeCharge(id: string, dto: ReasonDto): Promise<ChargeDeletedDto> {
     const charge = await this.requireCharge(id);
+    await this.periods.assertMonthOpen(charge.month, 'Удаление начисления');
+
     const transactions = await this.repository.countChargeTransactions(id);
 
     if (transactions > 0) {
@@ -246,6 +258,13 @@ export class PaymentsService {
       throw new BusinessRuleException('Начисление не найдено', { chargeId: dto.chargeId });
     }
 
+    const paidAt = paidAtOf(dto.paidAt);
+    // Проверяется **день платежа**, а не месяц начисления: деньги попадают
+    // в кассу тем днём, когда пришли (различие плана и кассы, 0030). Поэтому
+    // погасить долг за закрытый квартал платежом сегодняшнего дня можно —
+    // отчёт закрытого периода при этом не двигается, он снимок (0033).
+    await this.periods.assertDateOpen(paidAt, 'Приём оплаты');
+
     const amountCents = toCents(dto.amount);
     const remainingCents = remainingCentsOf(charge);
 
@@ -269,7 +288,7 @@ export class PaymentsService {
       studentId: charge.student.id,
       chargeId: charge.id,
       amountCents,
-      paidAt: paidAtOf(dto.paidAt),
+      paidAt,
       typeId: await this.resolveType(dto.typeId),
       comment: dto.comment === undefined ? null : (emptyToNullPatch(dto.comment) ?? null),
       createdById: await this.employeeIdOf(accountId),
@@ -296,11 +315,14 @@ export class PaymentsService {
       throw new BusinessRuleException('Студент не найден', { studentId: dto.studentId });
     }
 
+    const paidAt = paidAtOf(dto.paidAt);
+    await this.periods.assertDateOpen(paidAt, 'Приём предоплаты');
+
     const transaction = await this.repository.createTransaction({
       studentId: student.id,
       chargeId: null,
       amountCents: toCents(dto.amount),
-      paidAt: paidAtOf(dto.paidAt),
+      paidAt,
       typeId: await this.resolveType(dto.typeId),
       comment: dto.comment === undefined ? null : (emptyToNullPatch(dto.comment) ?? null),
       createdById: await this.employeeIdOf(accountId),
@@ -351,6 +373,14 @@ export class PaymentsService {
     accountId: string,
   ): Promise<PaymentTransactionDto> {
     const transaction = await this.requireTransaction(id);
+    const paidAt = dto.paidAt === undefined ? undefined : parseIsoDate(dto.paidAt, 'paidAt');
+
+    // Обе даты: платёж из закрытого периода не правится, и перенести платёж
+    // **в** закрытый период тоже нельзя (0033).
+    await this.periods.assertDatesOpen(
+      paidAt === undefined ? [transaction.paidAt] : [transaction.paidAt, paidAt],
+      'Правка платежа',
+    );
 
     const currentChargeId = transaction.charge?.id ?? null;
     const nextChargeId =
@@ -394,7 +424,7 @@ export class PaymentsService {
       id,
       {
         amountCents: dto.amount === undefined ? undefined : amountCents,
-        paidAt: dto.paidAt === undefined ? undefined : parseIsoDate(dto.paidAt, 'paidAt'),
+        paidAt,
         typeId:
           dto.typeId === undefined
             ? undefined
@@ -422,6 +452,7 @@ export class PaymentsService {
    */
   async removeTransaction(id: string, dto: ReasonDto): Promise<PaymentDeletedDto> {
     const transaction = await this.requireTransaction(id);
+    await this.periods.assertDateOpen(transaction.paidAt, 'Отмена платежа');
 
     await this.repository.deleteTransaction(id, transaction.charge?.id ?? null);
     this.logger.log(`Отменён платёж ${transactionTitle(transaction)} (${id}): ${dto.reason}`);

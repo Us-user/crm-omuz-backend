@@ -21,6 +21,7 @@ import type {
   ReasonDto,
   UpdateExpenseDto,
 } from './dto';
+import { PeriodGuardService } from './period-guard.service';
 
 /**
  * Расходы центра (ТЗ 5.16: «Expenses»).
@@ -40,7 +41,10 @@ import type {
 export class ExpensesService {
   private readonly logger = new Logger(ExpensesService.name);
 
-  constructor(private readonly repository: AccountingRepository) {}
+  constructor(
+    private readonly repository: AccountingRepository,
+    private readonly periods: PeriodGuardService,
+  ) {}
 
   async findAll(query: ExpensesQueryDto): Promise<Paginated<ExpenseDto>> {
     const filter = await this.filterOf(query);
@@ -65,11 +69,16 @@ export class ExpensesService {
   }
 
   async create(dto: CreateExpenseDto, accountId: string): Promise<ExpenseDto> {
+    const spentAt = dto.spentAt === undefined ? today() : parseIsoDate(dto.spentAt, 'spentAt');
+    // Отказ приходит до всех остальных проверок и до записи: расход, датированный
+    // закрытым периодом, не должен доходить до БД (правило 0033).
+    await this.periods.assertDateOpen(spentAt, 'Проведение расхода');
+
     const expense = await this.repository.createExpense({
       categoryId: await this.resolveCategory(dto.categoryId),
       title: dto.title,
       amountCents: toCents(dto.amount),
-      spentAt: dto.spentAt === undefined ? today() : parseIsoDate(dto.spentAt, 'spentAt'),
+      spentAt,
       branchId: dto.branchId === undefined ? null : await this.resolveBranch(dto.branchId),
       note: dto.note === undefined ? null : (emptyToNullPatch(dto.note) ?? null),
       createdById: await this.employeeIdOf(accountId),
@@ -84,6 +93,15 @@ export class ExpensesService {
 
   async update(id: string, dto: UpdateExpenseDto): Promise<ExpenseDto> {
     const existing = await this.require(id);
+    const spentAt = dto.spentAt === undefined ? undefined : parseIsoDate(dto.spentAt, 'spentAt');
+
+    // Проверяются **обе** даты: правка расхода из закрытого периода запрещена,
+    // и перенести открытый расход **в** закрытый период тоже нельзя — иначе
+    // запрет обходился бы с другой стороны (0033).
+    await this.periods.assertDatesOpen(
+      spentAt === undefined ? [existing.spentAt] : [existing.spentAt, spentAt],
+      'Правка расхода',
+    );
 
     // Пустая строка снимает привязку к филиалу — расход становится общим
     // для центра (правило пустой строки, 0011, 0014, 0029).
@@ -94,7 +112,7 @@ export class ExpensesService {
         dto.categoryId === undefined ? undefined : await this.resolveCategory(dto.categoryId),
       title: dto.title,
       amountCents: dto.amount === undefined ? undefined : toCents(dto.amount),
-      spentAt: dto.spentAt === undefined ? undefined : parseIsoDate(dto.spentAt, 'spentAt'),
+      spentAt,
       branchId:
         branchId === undefined || branchId === null ? branchId : await this.resolveBranch(branchId),
       note: emptyToNullPatch(dto.note),
@@ -112,6 +130,7 @@ export class ExpensesService {
    */
   async remove(id: string, dto: ReasonDto): Promise<ExpenseDeletedDto> {
     const expense = await this.require(id);
+    await this.periods.assertDateOpen(expense.spentAt, 'Удаление расхода');
 
     await this.repository.deleteExpense(id);
     this.logger.log(`Удалён расход ${expenseTitle(expense)} (${id}): ${dto.reason}`);

@@ -351,6 +351,12 @@ model Employee {
   confirmedSalaries         Salary[]            @relation("SalaryConfirmer")
   createdSalaryTransactions SalaryTransaction[] @relation("SalaryTransactionAuthor")
 
+  /// Финансовые периоды-отчёты, заведённые и закрытые этим сотрудником
+  /// (ТЗ 5.16). `SET NULL`: сданный отчёт переживает уход бухгалтера,
+  /// который его закрыл.
+  createdAccountingPeriods AccountingPeriod[] @relation("AccountingPeriodAuthor")
+  closedAccountingPeriods  AccountingPeriod[] @relation("AccountingPeriodCloser")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2502,4 +2508,96 @@ model SalaryTransaction {
   @@index([paidAt])
   @@index([typeId])
   @@map("salary_transactions")
+}
+
+/// Состояние финансового периода (ТЗ 5.16: «закрытие Inprogress→Archive»).
+enum AccountingPeriodStatus {
+  /// «Inprogress» из ТЗ: период ведётся, числа отчёта считаются на лету
+  /// и меняются вместе с кассой.
+  IN_PROGRESS
+  /// «Archive» из ТЗ: период закрыт. Числа заморожены снимком, а сам период
+  /// **не принимает операции, датированные внутри него**.
+  ARCHIVED
+}
+
+/// Финансовый период-отчёт (ТЗ 5.16: «Accountant: финансовые периоды-отчёты
+/// income/expense/paid/notpaid/net, закрытие Inprogress→Archive, выгрузка»).
+///
+/// Документ с собственным периодом, а не строка на календарный месяц (решение
+/// пользователя, 0033): ТЗ даёт маршрут `POST /accounting/periods/{id}/close`,
+/// то есть у периода есть свой идентификатор, а сдают отчётность и месяцем,
+/// и кварталом, и годом. Границы — месяцы (первые числа, обе включительно),
+/// как во всех отчётах проекта начиная с истории уровней (0021).
+///
+/// **Периоды не пересекаются** — осознанно иначе, чем бюджеты (0031). План
+/// отвечает на вопрос «сколько собирались потратить», и годовой план рядом
+/// с планом кампании законен; отчёт отвечает на вопрос «сколько центр
+/// заработал», и один платёж, попавший в два отчёта, дал бы два ответа
+/// на него. Проверку делает сервис (422 с названием мешающего периода):
+/// в схеме это выражалось бы только exclusion-ограничением, которого Prisma
+/// не строит.
+///
+/// **Закрытие замораживает снимок** (решение пользователя, 0033) — пятый снимок
+/// проекта после `MonthlyWinner` (0024), `mentorAtLeaveId` (0025),
+/// `Graduate.points` (0026) и подтверждения зарплаты (0032), и по той же
+/// причине: отчёт, который уже сдали, не должен меняться от правки расхода
+/// задним числом. У периода `IN_PROGRESS` все пять колонок снимка `null`,
+/// и числа считаются агрегатами.
+///
+/// Хранятся только **первичные** числа: «долг» и «итог» из них выводятся
+/// теми же функциями (`totalsOf`, вычитание в тыйинах), что и у живого
+/// периода, — поэтому архивный и текущий отчёты не могут разойтись в способе
+/// счёта, а колонка не становится вторым источником истины внутри своей же
+/// строки.
+model AccountingPeriod {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Название отчёта («III квартал 2026», «Сентябрь 2026»). Уникально
+  /// без учёта регистра — проверку делает сервис, как во всех справочниках.
+  name        String  @unique
+  description String?
+
+  /// Первый и последний месяцы периода — первые числа (`@db.Date`), наружу
+  /// `YYYY-MM`. Обе границы включающие; правая уходит в запросы первым числом
+  /// следующего месяца, чтобы не выводить самому, сколько дней в последнем
+  /// (приём 0025, 0031).
+  periodFrom DateTime @db.Date
+  periodTo   DateTime @db.Date
+
+  status AccountingPeriodStatus @default(IN_PROGRESS)
+
+  /// Снимок отчёта, снятый при закрытии. Все пять — `null` у периода в работе.
+  ///
+  /// `charged`/`paid` считаются по **месяцам обучения** (это план), `income`
+  /// и `salary` — по дню, когда деньги пришли и ушли (это касса): различие,
+  /// заданное решением 0030, здесь замораживается вместе с числами.
+  ///
+  /// Ширина `DECIMAL(14,2)`, а не `(12,2)` как у отдельных сумм: здесь лежит
+  /// **итог за год по всему центру**, то есть сложение тысяч строк, и потолок
+  /// одной операции (`MAX_MONEY_AMOUNT`) их сумму не ограничивает.
+  charged Decimal? @db.Decimal(14, 2)
+  paid    Decimal? @db.Decimal(14, 2)
+  income  Decimal? @db.Decimal(14, 2)
+  expense Decimal? @db.Decimal(14, 2)
+  salary  Decimal? @db.Decimal(14, 2)
+
+  /// Кто и когда закрыл период. `SET NULL` на сотрудника — как у всей
+  /// бухгалтерии (0029–0032).
+  closedAt   DateTime?
+  closedById String?   @db.Uuid
+  closedBy   Employee? @relation("AccountingPeriodCloser", fields: [closedById], references: [id], onDelete: SetNull)
+
+  createdById String?   @db.Uuid
+  createdBy   Employee? @relation("AccountingPeriodAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Главный запрос раздела и всей защиты от правок задним числом: «есть ли
+  /// архивный период, накрывающий этот месяц». Статус первым — он отсекает
+  /// большую часть строк.
+  @@index([status, periodFrom, periodTo])
+  /// Отбор по пересечению отрезков в списке и проверка непересечения.
+  @@index([periodFrom, periodTo])
+  @@map("accounting_periods")
 }
