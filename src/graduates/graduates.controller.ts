@@ -191,4 +191,3 @@ export class GraduatesController {
     res.send(pdf);
   }
 }
-

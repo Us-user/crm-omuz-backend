@@ -2,6 +2,10 @@ import { Body, Controller, HttpCode, HttpStatus, Post, Req } from '@nestjs/commo
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 
+// Прямые пути, а не barrel `../audit`: тому нужен только декоратор, а barrel
+// затянул бы правила журнала в модуль, который их не использует.
+import { AuditAction } from '../audit/decorators/audit-action.decorator';
+import { NoAudit } from '../audit/decorators/no-audit.decorator';
 import { ApiDataResponse, ApiStandardErrors } from '../common';
 import {
   PASSWORD_RESET_MAX_ATTEMPTS,
@@ -36,6 +40,9 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  // Прав каталога у входа нет по устройству: журналу имя действия задаётся
+  // явно, а «кто» берётся из выданной карточки аккаунта.
+  @AuditAction('Auth.Register')
   @ApiOperation({
     summary: 'Регистрация студента',
     description:
@@ -54,6 +61,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @AuditAction('Auth.Login')
   @ApiOperation({ summary: 'Вход по номеру телефона и паролю' })
   @ApiDataResponse(AuthResponseDto, { description: 'Токены выданы' })
   @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
@@ -64,6 +72,10 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  // Единственный изменяющий запрос проекта, который действием не является:
+  // пара токенов обновляется у каждого работающего человека раз в час
+  // и говорит лишь о том, что вкладка не закрыта.
+  @NoAudit()
   @ApiOperation({
     summary: 'Обновление пары токенов',
     description: 'Выдаёт новую пару и инвалидирует предъявленный refresh-токен (ротация, ТЗ 3.1).',
@@ -76,6 +88,7 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
+  @AuditAction('Auth.Logout')
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Выход с текущего устройства',
@@ -89,6 +102,7 @@ export class AuthController {
 
   @Post('logout-all')
   @HttpCode(HttpStatus.OK)
+  @AuditAction('Auth.LogoutAll')
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Выход со всех устройств' })
   @ApiDataResponse(LogoutResponseDto, { description: 'Все сессии аккаунта завершены' })
@@ -100,6 +114,9 @@ export class AuthController {
   @Public()
   @Post('password/forgot')
   @HttpCode(HttpStatus.OK)
+  // Действующее лицо здесь останется пустым: ответ одинаков независимо от того,
+  // существует ли аккаунт, — и журнал не должен выдавать то, что скрывает ответ.
+  @AuditAction('Auth.PasswordForgot')
   @ApiOperation({
     summary: 'Запрос кода восстановления пароля',
     description:
@@ -117,6 +134,7 @@ export class AuthController {
   @Public()
   @Post('password/reset')
   @HttpCode(HttpStatus.OK)
+  @AuditAction('Auth.PasswordReset')
   @ApiOperation({
     summary: 'Смена пароля по коду из письма',
     description:

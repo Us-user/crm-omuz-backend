@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AccountingModule } from './accounting/accounting.module';
+import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AvansModule } from './avans/avans.module';
 import { BranchesModule } from './branches/branches.module';
@@ -42,6 +43,7 @@ import { StudentCabinetModule } from './student-cabinet/student-cabinet.module';
 import { StudentCoinsModule } from './student-coins/student-coins.module';
 import { StudentFeedbackModule } from './student-feedback/student-feedback.module';
 import { StudentParentsModule } from './student-parents/student-parents.module';
+import { StudentContractsModule } from './students/student-contracts.module';
 import { StudentsModule } from './students/students.module';
 import { SyllabusModule } from './syllabus/syllabus.module';
 import { TimetableModule } from './timetable/timetable.module';
@@ -56,10 +58,18 @@ import { TimetableModule } from './timetable/timetable.module';
     MailerModule,
     MessagingModule,
     PhoneModule,
+    // Журнал действий (ТЗ 3.6). Стоит **раньше `AuthModule`** осознанно:
+    // глобальные guard'ы выполняются в порядке регистрации, и запись «кто
+    // ломился в закрытый эндпоинт» возможна только если журнал успел
+    // подписаться на ответ до отказа `JwtAuthGuard`. На порядок есть e2e-тест.
+    AuditModule,
     AuthModule,
     RbacModule,
     RbacAdminModule,
     StudentsModule,
+    // Договоры вынесены из `StudentsModule` (Фаза 12 держала их там, и модуль
+    // студентов начал требовать живой Prisma от каждого e2e-набора).
+    StudentContractsModule,
     StudentAccessModule,
     StudentCabinetModule,
     StudentCoinsModule,

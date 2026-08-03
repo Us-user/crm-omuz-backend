@@ -8,7 +8,10 @@ export class CreateContractDto {
   @IsNotEmpty()
   contractNumber: string;
 
-  @ApiProperty({ description: 'Название договора', example: 'Договор на оказание образовательных услуг' })
+  @ApiProperty({
+    description: 'Название договора',
+    example: 'Договор на оказание образовательных услуг',
+  })
   @IsString()
   @IsNotEmpty()
   title: string;
@@ -17,7 +20,10 @@ export class CreateContractDto {
   @IsDateString()
   issuedAt: string;
 
-  @ApiPropertyOptional({ description: 'Дата окончания действия (YYYY-MM-DD)', example: '2027-08-01' })
+  @ApiPropertyOptional({
+    description: 'Дата окончания действия (YYYY-MM-DD)',
+    example: '2027-08-01',
+  })
   @IsOptional()
   @IsDateString()
   validUntil?: string;

@@ -11,6 +11,8 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AccountType } from '@prisma/client';
 
+// Прямой путь, а не barrel `../audit`: контроллеру нужен только декоратор.
+import { AuditAction } from '../audit/decorators/audit-action.decorator';
 import type { AuthenticatedUser } from '../auth';
 import { AccountTypeGuard, CurrentUser, RequireAccountType } from '../auth';
 import type { Paginated } from '../common';
@@ -64,6 +66,9 @@ export class MentorMailingsController {
 
   @Post()
   @HttpCode(HttpStatus.ACCEPTED)
+  // Права каталога здесь нет (менторство вместо разрешения, 0023), поэтому имя
+  // действия задаётся явно: рассылка людям — то, что журнал обязан помнить.
+  @AuditAction('Mailings.SendOwnGroup')
   @ApiOperation({
     summary: 'Рассылка своей группе',
     description:

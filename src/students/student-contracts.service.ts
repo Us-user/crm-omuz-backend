@@ -55,7 +55,9 @@ export class StudentContractsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return contracts.map(ContractDto.fromEntity);
+    // Стрелка, а не ссылка на метод: `map` вызвал бы его без владельца,
+    // и `this` внутри статического преобразования оказался бы чужим.
+    return contracts.map((contract) => ContractDto.fromEntity(contract));
   }
 
   async exportContract(
@@ -78,7 +80,9 @@ export class StudentContractsService {
     });
 
     if (!contract) {
-      throw new NotFoundException(`Договор с id "${contractId}" у студента "${studentId}" не найден`);
+      throw new NotFoundException(
+        `Договор с id "${contractId}" у студента "${studentId}" не найден`,
+      );
     }
 
     const activeCourse = contract.student.groups[0]?.group.course.title;

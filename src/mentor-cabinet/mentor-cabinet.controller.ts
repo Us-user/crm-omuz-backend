@@ -14,6 +14,8 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { AccountType } from '@prisma/client';
 
+// Прямой путь, а не barrel `../audit`: контроллеру нужен только декоратор.
+import { AuditAction } from '../audit/decorators/audit-action.decorator';
 import type { AuthenticatedUser } from '../auth';
 import { AccountTypeGuard, CurrentUser, RequireAccountType } from '../auth';
 import {
@@ -203,6 +205,9 @@ export class MentorCabinetController {
 
   @Post('avans')
   @HttpCode(HttpStatus.CREATED)
+  // Права каталога здесь нет по устройству раздела, поэтому имя действия
+  // журналу задаётся явно — иначе оно вывелось бы из имени обработчика.
+  @AuditAction('Avans.CreateOwn')
   @ApiOperation({
     summary: 'Подача заявки на аванс о себе',
     description:
@@ -233,6 +238,7 @@ export class MentorCabinetController {
   }
 
   @Delete('avans/:avansId')
+  @AuditAction('Avans.CancelOwn')
   @ApiOperation({
     summary: 'Отзыв своей заявки на аванс',
     description:

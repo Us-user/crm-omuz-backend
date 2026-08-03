@@ -569,10 +569,7 @@ export class PaymentsService {
     return employee?.id ?? null;
   }
 
-  async exportReceipt(
-    transactionId: string,
-    format: 'pdf' | 'docx' = 'pdf',
-  ): Promise<Buffer> {
+  async exportReceipt(transactionId: string, format: 'pdf' | 'docx' = 'pdf'): Promise<Buffer> {
     const tx = await this.repository.findTransactionById(transactionId);
     if (!tx) {
       throw new NotFoundException(`Транзакция с id "${transactionId}" не найдена`);
@@ -691,5 +688,3 @@ export const toTransactionDto = (row: TransactionRow): PaymentTransactionDto => 
   createdBy: row.createdBy,
   createdAt: row.createdAt.toISOString(),
 });
-
-

@@ -1,12 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  Document,
-  Packer,
-  Paragraph,
-  TextRun,
-  AlignmentType,
-  HeadingLevel,
-} from 'docx';
+import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from 'docx';
 import { StudentContractData, PaymentReceiptData } from './pdf-generator.service';
 
 @Injectable()
@@ -30,9 +23,7 @@ export class DocxGeneratorService {
             }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Обучающий центр «Omuz»', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Обучающий центр «Omuz»', bold: true })],
             }),
             new Paragraph({
               text: `Дата выдачи: ${data.issuedAt.toISOString().split('T')[0]}`,
@@ -44,9 +35,7 @@ export class DocxGeneratorService {
               : new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Сведения о студенте:', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Сведения о студенте:', bold: true })],
             }),
             new Paragraph({ text: `ФИО: ${data.studentName}` }),
             new Paragraph({ text: `Телефон: ${data.studentPhone}` }),
@@ -58,9 +47,7 @@ export class DocxGeneratorService {
               : new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Условия договора:', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Условия договора:', bold: true })],
             }),
             new Paragraph({
               text: '1. Обучающий центр обязуется предоставить качественные образовательные услуги согласно утвержденной программе курса.',
@@ -72,7 +59,9 @@ export class DocxGeneratorService {
               text: '3. По окончании курса при успешной сдаче экзаменов студенту выдается сертификат установительного образца.',
             }),
             data.notes
-              ? new Paragraph({ children: [new TextRun({ text: `Примечания: ${data.notes}`, italics: true })] })
+              ? new Paragraph({
+                  children: [new TextRun({ text: `Примечания: ${data.notes}`, italics: true })],
+                })
               : new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
@@ -106,16 +95,12 @@ export class DocxGeneratorService {
             }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Обучающий центр «Omuz»', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Обучающий центр «Omuz»', bold: true })],
             }),
             new Paragraph({ text: `Дата и время: ${data.paidAt.toISOString()}` }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Плательщик:', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Плательщик:', bold: true })],
             }),
             new Paragraph({ text: `ФИО: ${data.studentName}` }),
             new Paragraph({ text: `Телефон: ${data.studentPhone}` }),
@@ -127,9 +112,7 @@ export class DocxGeneratorService {
               : new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
             new Paragraph({
-              children: [
-                new TextRun({ text: 'Детали платежа:', bold: true }),
-              ],
+              children: [new TextRun({ text: 'Детали платежа:', bold: true })],
             }),
             new Paragraph({ text: `Способ оплаты: ${data.paymentType}` }),
             new Paragraph({
@@ -141,7 +124,9 @@ export class DocxGeneratorService {
               ],
             }),
             data.note
-              ? new Paragraph({ children: [new TextRun({ text: `Примечание: ${data.note}`, italics: true })] })
+              ? new Paragraph({
+                  children: [new TextRun({ text: `Примечание: ${data.note}`, italics: true })],
+                })
               : new Paragraph({ text: '' }),
             new Paragraph({ text: '' }),
             new Paragraph({

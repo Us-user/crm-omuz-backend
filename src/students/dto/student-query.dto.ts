@@ -74,8 +74,7 @@ export class StudentQueryDto extends PaginationQueryDto {
   hasAccount?: boolean;
 
   @ApiPropertyOptional({
-    description:
-      'Есть ли у студента хоть один договор. `true` даёт список студентов с договором.',
+    description: 'Есть ли у студента хоть один договор. `true` даёт список студентов с договором.',
   })
   @IsOptional()
   @Transform(toBoolean)
@@ -90,4 +89,3 @@ export class StudentQueryDto extends PaginationQueryDto {
   @IsEnum(['ACTIVE', 'EXPIRED', 'TERMINATED'])
   contractStatus?: 'ACTIVE' | 'EXPIRED' | 'TERMINATED';
 }
-

@@ -1,5 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import type { PrismaService } from '../prisma/prisma.service';
 import { PdfGeneratorService } from '../documents/pdf-generator.service';
 import { DocxGeneratorService } from '../documents/docx-generator.service';
 import { StudentContractsService } from './student-contracts.service';
