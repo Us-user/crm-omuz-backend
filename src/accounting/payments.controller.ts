@@ -10,16 +10,20 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiExtraModels,
   ApiOperation,
+  ApiParam,
+  ApiQuery,
   ApiTags,
   getSchemaPath,
 } from '@nestjs/swagger';
 import { AccountType } from '@prisma/client';
+import type { Response } from 'express';
 
 import type { AuthenticatedUser } from '../auth';
 import { AccountTypeGuard, CurrentUser, RequireAccountType } from '../auth';
@@ -162,6 +166,38 @@ export class PaymentsController {
     @Body() dto: ReasonDto,
   ): Promise<PaymentDeletedDto> {
     return this.payments.removeTransaction(id, dto);
+  }
+
+  @Get('transactions/:id/receipt/export')
+  @RequirePermission('Permission.Accounting.Views')
+  @ApiOperation({ summary: 'Выгрузка квитанции/чека оплаты в формате PDF или DOCX (ТЗ 3.7)' })
+  @ApiParam({ name: 'id', format: 'uuid', description: 'Идентификатор транзакции оплаты' })
+  @ApiQuery({ name: 'format', enum: ['pdf', 'docx'], required: false, default: 'pdf' })
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+  )
+  async exportReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('format') format: 'pdf' | 'docx' = 'pdf',
+    @Res() res: Response,
+  ): Promise<void> {
+    const file = await this.payments.exportReceipt(id, format);
+
+    if (format === 'docx') {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="receipt_${id}.docx"`);
+    } else {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="receipt_${id}.pdf"`);
+    }
+
+    res.send(file);
   }
 
   @Post('prepayment')

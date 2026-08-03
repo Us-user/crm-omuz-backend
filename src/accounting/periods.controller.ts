@@ -237,6 +237,25 @@ export class PeriodsController {
     return file.content;
   }
 
+  @Get(':id/export-pdf')
+  @RequirePermission('Permission.Accounting.Views')
+  @ApiOperation({ summary: 'Выгрузка отчёта финансового периода в формате PDF (ТЗ 3.7)' })
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+  )
+  async exportPdf(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const pdf = await this.periods.exportPdf(id);
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader('Content-Disposition', `inline; filename="period_${id}.pdf"`);
+    response.send(pdf);
+  }
+
   @Delete(':id')
   @RequirePermission('Permission.Accounting.ManagePeriods')
   @ApiOperation({

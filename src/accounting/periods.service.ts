@@ -70,11 +70,16 @@ export interface PeriodCsvFile {
  * период навсегда запер бы кассу за собой. Обратимость в проекте закрывается
  * явным обратным ходом, а не отсутствием запрета (0021, 0022, 0024, 0026, 0031).
  */
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
+
 @Injectable()
 export class PeriodsService {
   private readonly logger = new Logger(PeriodsService.name);
 
-  constructor(private readonly repository: AccountingRepository) {}
+  constructor(
+    private readonly repository: AccountingRepository,
+    private readonly pdfGenerator: PdfGeneratorService,
+  ) {}
 
   async findAll(query: AccountingPeriodsQueryDto): Promise<Paginated<AccountingPeriodDto>> {
     const params: AccountingPeriodListParams = {
@@ -301,6 +306,23 @@ export class PeriodsService {
       )}.csv`,
       months: months.length,
     };
+  }
+
+  async exportPdf(id: string): Promise<Buffer> {
+    const dto = await this.findOne(id);
+    const period = await this.require(id);
+
+    return this.pdfGenerator.generateAccountantReportPdf({
+      periodId: dto.id,
+      periodName: dto.name,
+      startDate: period.periodFrom,
+      endDate: period.periodTo,
+      totalIncomeTjs: dto.report.income,
+      totalExpenseTjs: dto.report.expense,
+      totalSalaryTjs: dto.report.salary,
+      netProfitTjs: dto.report.net,
+      debtorAmountTjs: dto.report.debt,
+    });
   }
 
   /**

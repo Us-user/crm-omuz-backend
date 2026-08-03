@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { DocumentsModule } from '../documents/documents.module';
 import { GraduatesController } from './graduates.controller';
 import { GraduatesRepository } from './graduates.repository';
 import { GraduatesService } from './graduates.service';
@@ -23,6 +24,7 @@ import { GraduatesService } from './graduates.service';
  * `PrismaService` — из глобального модуля.
  */
 @Module({
+  imports: [DocumentsModule],
   controllers: [GraduatesController],
   providers: [GraduatesService, GraduatesRepository],
   exports: [GraduatesService],

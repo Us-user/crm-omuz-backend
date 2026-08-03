@@ -2,6 +2,7 @@ import { ConflictException, Injectable, Logger, NotFoundException } from '@nestj
 import { GraduateEmployment } from '@prisma/client';
 
 import {
+  BusinessRuleException,
   emptyToNullPatch,
   formatIsoDate,
   nextIsoMonth,
@@ -9,6 +10,7 @@ import {
   parseIsoDate,
   parseIsoMonth,
 } from '../common';
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
 // Прямым путём, а не через barrel: нужны только чистые функции правила
 // (правило сессии 0007).
 import type { ActivityCategory } from '../performance/performance';
@@ -63,7 +65,10 @@ export const GRADUATION_STATUS_REASON = 'Группа завершила обу�
 export class GraduatesService {
   private readonly logger = new Logger(GraduatesService.name);
 
-  constructor(private readonly repository: GraduatesRepository) {}
+  constructor(
+    private readonly repository: GraduatesRepository,
+    private readonly pdfGenerator: PdfGeneratorService,
+  ) {}
 
   /** Список выпускников (ТЗ 5.11: «виды Students/Groups»). */
   async findAll(query: GraduatesQueryDto): Promise<Paginated<GraduateDto>> {
@@ -177,6 +182,33 @@ export class GraduatesService {
     );
 
     return toDto(graduate);
+  }
+
+  /**
+   * Генерация PDF-сертификата выпускника (ТЗ 3.7, 5.11).
+   */
+  async exportCertificate(id: string): Promise<Buffer> {
+    const graduate = await this.require(id);
+
+    if (graduate.certificateSerial === null) {
+      throw new BusinessRuleException(
+        'CERTIFICATE_NOT_ISSUED',
+        `Для выпуска "${id}" ещё не выдан сертификат. Сначала укажите серийный номер.`,
+      );
+    }
+
+    const points = toPoints(graduate.points);
+    const level = activityCategoryOf(points);
+    const categoryTitle = level === null ? 'Ученик' : (ACTIVITY_CATEGORY_TITLES[level] ?? 'Ученик');
+
+    return this.pdfGenerator.generateCertificatePdf({
+      serialNumber: graduate.certificateSerial,
+      studentName: fullName(graduate),
+      courseTitle: graduate.group.course.title,
+      issueDate: graduate.certificateIssuedAt ?? graduate.graduatedAt,
+      score: points ?? 0,
+      activityCategory: categoryTitle,
+    });
   }
 
   // ─────────────────────────── Автовыпуск (ТЗ 5.11) ───────────────────────────

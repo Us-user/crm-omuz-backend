@@ -44,7 +44,10 @@ import { SalaryService } from './salary.service';
  *
  * `PrismaService` — из глобального модуля.
  */
+import { DocumentsModule } from '../documents/documents.module';
+
 @Module({
+  imports: [DocumentsModule],
   controllers: [
     PaymentTypesController,
     PaymentsController,

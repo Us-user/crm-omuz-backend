@@ -60,6 +60,9 @@ import { PeriodGuardService } from './period-guard.service';
  * месяцев без вычитаний в обе стороны, и отчёт по должникам не приходится
  * чинить отрицательными числами.
  */
+import { DocxGeneratorService } from '../documents/docx-generator.service';
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -67,6 +70,8 @@ export class PaymentsService {
   constructor(
     private readonly repository: AccountingRepository,
     private readonly periods: PeriodGuardService,
+    private readonly pdfGenerator: PdfGeneratorService,
+    private readonly docxGenerator: DocxGeneratorService,
   ) {}
 
   // ─────────────────────── Начисление месяца (ТЗ 5.16) ──────────────────────
@@ -563,6 +568,33 @@ export class PaymentsService {
 
     return employee?.id ?? null;
   }
+
+  async exportReceipt(
+    transactionId: string,
+    format: 'pdf' | 'docx' = 'pdf',
+  ): Promise<Buffer> {
+    const tx = await this.repository.findTransactionById(transactionId);
+    if (!tx) {
+      throw new NotFoundException(`Транзакция с id "${transactionId}" не найдена`);
+    }
+
+    const data = {
+      transactionId: tx.id,
+      studentName: `${tx.student.firstName} ${tx.student.lastName}`,
+      studentPhone: tx.student.phone,
+      courseTitle: tx.charge?.group.name,
+      month: tx.charge ? formatIsoMonth(tx.charge.month) : undefined,
+      amountTjs: Number(tx.amount),
+      paymentType: tx.type?.name ?? 'Оплата',
+      paidAt: tx.paidAt,
+      note: tx.comment ?? undefined,
+    };
+
+    if (format === 'docx') {
+      return this.docxGenerator.generatePaymentReceiptDocx(data);
+    }
+    return this.pdfGenerator.generatePaymentReceiptPdf(data);
+  }
 }
 
 /** Разбор доменных фильтров — общий для списка и для итогов `meta`. */
@@ -659,3 +691,5 @@ export const toTransactionDto = (row: TransactionRow): PaymentTransactionDto => 
   createdBy: row.createdBy,
   createdAt: row.createdAt.toISOString(),
 });
+
+

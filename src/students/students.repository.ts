@@ -163,6 +163,8 @@ export interface StudentListParams {
   groupId?: string;
   courseId?: string;
   hasAccount?: boolean;
+  hasContract?: boolean;
+  contractStatus?: 'ACTIVE' | 'EXPIRED' | 'TERMINATED';
   sort: StudentSortField;
   order: SortOrder;
   skip: number;
@@ -212,6 +214,12 @@ export class StudentsRepository {
       ...(params.hasAccount === undefined
         ? {}
         : { accountId: params.hasAccount ? { not: null } : null }),
+      ...(params.hasContract === undefined
+        ? {}
+        : { contracts: params.hasContract ? { some: {} } : { none: {} } }),
+      ...(params.contractStatus === undefined
+        ? {}
+        : { contracts: { some: { status: params.contractStatus } } }),
       // Фильтры «Group» и «Course» (ТЗ 5.3) смотрят только на действующие
       // членства: «студенты группы» — это те, кто в ней учится, а не все,
       // кто когда-либо в ней числился.

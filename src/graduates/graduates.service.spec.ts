@@ -6,6 +6,7 @@ import { ActivityCategory } from '../performance/performance';
 import { GraduatesQueryDto, GraduateSortField } from './dto';
 import type { GraduateRow, GraduatesRepository, GraduationGroup } from './graduates.repository';
 import { GRADUATION_STATUS_REASON, GraduatesService } from './graduates.service';
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
 
 const GRADUATE_ID = '11111111-1111-1111-1111-111111111111';
 const STUDENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -101,7 +102,10 @@ describe('GraduatesService', () => {
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
     };
 
-    service = new GraduatesService(repository as unknown as GraduatesRepository);
+    service = new GraduatesService(
+      repository as unknown as GraduatesRepository,
+      new PdfGeneratorService(),
+    );
   });
 
   describe('Список и карточка', () => {

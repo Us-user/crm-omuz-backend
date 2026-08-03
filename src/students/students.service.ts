@@ -73,6 +73,8 @@ export class StudentsService {
       groupId: query.groupId,
       courseId: query.courseId,
       hasAccount: query.hasAccount,
+      hasContract: query.hasContract,
+      contractStatus: query.contractStatus,
       sort: query.sort,
       order: query.order,
       skip: query.skip,

@@ -7,6 +7,7 @@ import type { AccountingPeriodRow } from './accounting.repository';
 import type { AccountingRepository } from './accounting.repository';
 import { AccountingPeriodSortField, type AccountingPeriodsQueryDto } from './dto';
 import { PeriodsService } from './periods.service';
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
 
 const PERIOD_ID = randomUUID();
 const ACCOUNT_ID = randomUUID();
@@ -87,7 +88,7 @@ describe('PeriodsService', () => {
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
     } as unknown as jest.Mocked<AccountingRepository>;
 
-    service = new PeriodsService(repository);
+    service = new PeriodsService(repository, new PdfGeneratorService());
   });
 
   // ──────────────────────────────── Список ───────────────────────────────────

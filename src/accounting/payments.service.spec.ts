@@ -12,6 +12,8 @@ import type {
 import { ChargesQueryDto, TransactionsQueryDto } from './dto';
 import { PeriodGuardService } from './period-guard.service';
 import { PaymentsService } from './payments.service';
+import { PdfGeneratorService } from '../documents/pdf-generator.service';
+import { DocxGeneratorService } from '../documents/docx-generator.service';
 
 const CHARGE_ID = '11111111-1111-1111-1111-111111111111';
 const OTHER_CHARGE_ID = '1a1a1a1a-1111-1111-1111-111111111111';
@@ -153,13 +155,14 @@ describe('PaymentsService', () => {
         .fn()
         .mockResolvedValue({ id: STUDENT_ID, firstName: 'Нилуфар', lastName: 'Каримова' }),
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
-      // По умолчанию закрытых периодов нет — правило 0033 проверяется отдельно.
       findArchivedPeriodForMonth: jest.fn().mockResolvedValue(null),
     };
 
     service = new PaymentsService(
       repository as unknown as AccountingRepository,
       new PeriodGuardService(repository as unknown as AccountingRepository),
+      new PdfGeneratorService(),
+      new DocxGeneratorService(),
     );
   });
 

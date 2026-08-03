@@ -9,6 +9,7 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -19,6 +20,7 @@ import {
   getSchemaPath,
 } from '@nestjs/swagger';
 import { AccountType } from '@prisma/client';
+import type { Response } from 'express';
 
 import type { AuthenticatedUser } from '../auth';
 import { AccountTypeGuard, CurrentUser, RequireAccountType } from '../auth';
@@ -168,4 +170,25 @@ export class GraduatesController {
   revokeCertificate(@Param('id', ParseUUIDPipe) id: string): Promise<GraduateDto> {
     return this.graduates.revokeCertificate(id);
   }
+
+  @Get(':id/certificate/export')
+  @RequirePermission('Permission.Graduates.Certificate')
+  @ApiOperation({ summary: 'Выгрузка сертификата выпускника в формате PDF (ТЗ 3.7, 5.11)' })
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+  )
+  async exportCertificate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const pdf = await this.graduates.exportCertificate(id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="certificate_${id}.pdf"`);
+    res.send(pdf);
+  }
 }
+

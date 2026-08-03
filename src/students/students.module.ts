@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
-
+import { DocumentsModule } from '../documents/documents.module';
+import { StudentContractsController } from './student-contracts.controller';
+import { StudentContractsService } from './student-contracts.service';
 import { StudentPromotionService } from './student-promotion.service';
 import { StudentsController } from './students.controller';
 import { StudentsRepository } from './students.repository';
@@ -17,8 +19,10 @@ import { StudentsService } from './students.service';
  * `PhoneService` и `PrismaService` берутся из глобальных модулей.
  */
 @Module({
-  controllers: [StudentsController],
-  providers: [StudentsService, StudentPromotionService, StudentsRepository],
-  exports: [StudentPromotionService],
+  imports: [DocumentsModule],
+  controllers: [StudentsController, StudentContractsController],
+  providers: [StudentsService, StudentPromotionService, StudentContractsService, StudentsRepository],
+  exports: [StudentPromotionService, StudentContractsService],
 })
 export class StudentsModule {}
+

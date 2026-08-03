@@ -235,6 +235,9 @@ model Student {
   /// в ней хранятся снимком и переживают ссылку.
   notifications Notification[]
 
+  /// Договоры студента (ТЗ 5.3).
+  contracts Contract[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2892,3 +2895,32 @@ model Notification {
   @@index([leadId])
   @@map("notifications")
 }
+
+// ─────────────────────────── Фаза 12 — Генерация документов ───────────────────────────
+
+enum ContractStatus {
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+/// Договор обучения студента (ТЗ 3.7, 5.3).
+model Contract {
+  id             String         @id @default(uuid()) @db.Uuid
+  studentId      String         @db.Uuid
+  student        Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  contractNumber String         @unique
+  title          String
+  issuedAt       DateTime       @db.Date
+  validUntil     DateTime?      @db.Date
+  status         ContractStatus @default(ACTIVE)
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([studentId])
+  @@index([status])
+  @@map("contracts")
+}
+
