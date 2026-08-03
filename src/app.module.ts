@@ -36,6 +36,7 @@ import { RbacAdminModule } from './rbac/rbac-admin.module';
 import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
+import { SchedulingModule } from './scheduling/scheduling.module';
 import { StudentAccessModule } from './student-access/student-access.module';
 import { StudentCabinetModule } from './student-cabinet/student-cabinet.module';
 import { StudentCoinsModule } from './student-coins/student-coins.module';
@@ -90,6 +91,9 @@ import { TimetableModule } from './timetable/timetable.module';
     // Обработчик очереди подключается отдельным модулем: он создаёт воркер
     // BullMQ, и e2e-наборам рассылок Redis для этого не нужен.
     MailingsWorkerModule,
+    // Фоновые задачи по расписанию (поздравления с ДР, уборка доставок,
+    // автозакрытие рейтинга) — тоже воркер BullMQ, потому и отдельным модулем.
+    SchedulingModule,
     HealthModule,
   ],
   providers: [

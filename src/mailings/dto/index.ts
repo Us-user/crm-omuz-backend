@@ -3,6 +3,7 @@ export * from './create-template.dto';
 export * from './mailing-query.dto';
 export * from './mailing-response.dto';
 export * from './notification.dto';
+export * from './send-group-mailing.dto';
 export * from './send-mailing.dto';
 export * from './template-query.dto';
 export * from './template-response.dto';

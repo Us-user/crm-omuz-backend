@@ -68,6 +68,16 @@ export class AppConfigService {
     return this.get('MAIL_FROM');
   }
 
+  /** Смещение часового пояса центра от UTC в минутах (ТЗ 3.3). Таджикистан — 300. */
+  get centerUtcOffsetMinutes(): number {
+    return this.get('CENTER_UTC_OFFSET_MINUTES');
+  }
+
+  /** Включены ли фоновые задачи по расписанию (ТЗ 3.4). В тестах — всегда выключены. */
+  get scheduledTasksEnabled(): boolean {
+    return this.get('SCHEDULED_TASKS_ENABLED');
+  }
+
   get swaggerEnabled(): boolean {
     return this.get('SWAGGER_ENABLED');
   }

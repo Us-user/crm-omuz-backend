@@ -374,6 +374,7 @@ class InMemoryStore {
       address: row.address,
       status: row.status,
       attempts: row.attempts,
+      body: row.body ?? null,
       mailing: {
         id: row.mailingId,
         title: mailing?.title ?? '',

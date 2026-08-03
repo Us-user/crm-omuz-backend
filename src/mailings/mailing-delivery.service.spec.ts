@@ -11,6 +11,7 @@ const delivery = (over: Partial<DeliveryRow> = {}): DeliveryRow => ({
   address: '@umed',
   status: NotificationStatus.PENDING,
   attempts: 0,
+  body: null,
   mailing: { id: 'm1', title: 'Занятия', body: 'Перенос на 14:00' },
   ...over,
 });

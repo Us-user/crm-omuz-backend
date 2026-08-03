@@ -4,7 +4,18 @@ import { CoinSource } from '@prisma/client';
 
 import type { SortOrder } from '../common';
 import { PrismaService } from '../prisma/prisma.service';
+import { DIRECTOR_POSITION_NAME } from '../rbac/rbac.constants';
 import { JournalWeekSortField } from './dto';
+
+/** Контакты руководителя — адресата отчёта о финализации недели (ТЗ 5.8, 0018). */
+export interface DirectorContact {
+  id: string;
+  firstName: string;
+  lastName: string;
+  telegram: string | null;
+  phone: string | null;
+  email: string | null;
+}
 
 /**
  * Поля учебного дня, общие для списка и карточки. Ведущий и длительность
@@ -450,6 +461,33 @@ export class GroupJournalRepository {
   /** Профиль сотрудника по его аккаунту — тот, кто финализировал неделю. */
   findEmployeeByAccount(accountId: string): Promise<{ id: string } | null> {
     return this.prisma.employee.findUnique({ where: { accountId }, select: { id: true } });
+  }
+
+  /**
+   * Действующие руководители — адресаты отчёта о финализации недели (ТЗ 5.8,
+   * обещание 0018: «доставка появится с уведомлениями Фазы 11»).
+   *
+   * Директор определён **системной** позицией (`isSystem` + имя), а не просто
+   * названием: несистемную позицию-тёзку правило не защищает — тот же довод,
+   * что в правиле «последний Director» (0006). Контакты берутся снимком, адрес
+   * под канал выбирает сервис (`addressFor`).
+   */
+  findActiveDirectors(): Promise<DirectorContact[]> {
+    return this.prisma.employee.findMany({
+      where: {
+        status: 'ACTIVE',
+        positions: { some: { position: { isSystem: true, name: DIRECTOR_POSITION_NAME } } },
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        telegram: true,
+        phone: true,
+        email: true,
+      },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }, { id: 'asc' }],
+    });
   }
 
   /** Неделя после записи: она только что существовала, отсутствие здесь — сбой. */

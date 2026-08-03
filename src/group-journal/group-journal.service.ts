@@ -4,12 +4,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { GroupStudentStatus, LessonType } from '@prisma/client';
 import {
   AttendanceMark,
   GroupStudentStatus as MembershipStatus,
   LessonType as DayType,
+  MessageChannel,
 } from '@prisma/client';
 
 import {
@@ -19,6 +21,8 @@ import {
   Paginated,
   parseIsoDate,
 } from '../common';
+import { addressFor } from '../mailings/mailings';
+import { MessageSender } from '../messaging';
 import { coinsForWeekSum } from '../student-coins/coin-award';
 import type {
   CreateJournalWeekDto,
@@ -102,7 +106,16 @@ interface WeekState {
 export class GroupJournalService {
   private readonly logger = new Logger(GroupJournalService.name);
 
-  constructor(private readonly repository: GroupJournalRepository) {}
+  /**
+   * `MessageSender` необязателен: доставка отчёта Директору — приятное следствие
+   * финализации, а не её часть. Наборы, поднимающие журнал без модуля сообщений,
+   * получают `undefined`, и отчёт просто не рассылается — сама неделя при этом
+   * финализируется как прежде.
+   */
+  constructor(
+    private readonly repository: GroupJournalRepository,
+    @Optional() private readonly sender?: MessageSender,
+  ) {}
 
   /** Список недель журнала (ТЗ 5.8). Клетки в него не входят — их показывает карточка недели. */
   async findAll(
@@ -335,8 +348,6 @@ export class GroupJournalService {
     const composed = await this.compose(submitted, roster);
     const coinsAwarded = awards.reduce((total, award) => total + award.amount, 0);
 
-    // Отчёт Директору собирается здесь и уходит в лог; доставка (Telegram/почта)
-    // появится с уведомлениями Фазы 11 — обещать её сейчас было бы неправдой.
     this.logger.log(
       `Финализирована неделя ${String(week.weekNumber)} группы ${group.name}: ` +
         `студентов ${String(composed.studentsCount)}, средний балл ` +
@@ -344,19 +355,55 @@ export class GroupJournalService {
         `начислено коинов ${String(coinsAwarded)}`,
     );
 
-    return {
-      week: composed,
-      report: {
-        groupId,
-        groupName: group.name,
-        weekNumber: week.weekNumber,
-        startDate: formatIsoDate(week.startDate),
-        studentsCount: composed.studentsCount,
-        averageSum: composed.averageSum,
-        coinsAwarded,
-        awards: reported,
-      },
+    const report = {
+      groupId,
+      groupName: group.name,
+      weekNumber: week.weekNumber,
+      startDate: formatIsoDate(week.startDate),
+      studentsCount: composed.studentsCount,
+      averageSum: composed.averageSum,
+      coinsAwarded,
+      awards: reported,
     };
+
+    // Отчёт Директору (ТЗ 5.8, обещание 0018) — **после** транзакции и никогда
+    // не в ущерб ей: неделя уже финализирована, и сбой доставки не должен
+    // выглядеть как сбой финализации. Поэтому доставка обёрнута в свой перехват.
+    await this.deliverReport(report);
+
+    return { week: composed, report };
+  }
+
+  /**
+   * Доставка отчёта о финализации Директору (ТЗ 5.8). Основной канал — Telegram
+   * (ТЗ 3.4); руководитель без адреса просто пропускается. Ничего не бросает:
+   * финализация уже состоялась, и упавшее сообщение — повод для лога, а не для
+   * отката. Провайдера пока нет (решение 0036), поэтому наружу уходит запись
+   * в лог — но путь доставки настоящий, и подключение провайдера его оживит.
+   */
+  private async deliverReport(report: WeekSubmittedDto['report']): Promise<void> {
+    if (!this.sender) return;
+
+    try {
+      const directors = await this.repository.findActiveDirectors();
+      if (directors.length === 0) return;
+
+      const title = `Отчёт по неделе ${String(report.weekNumber)}: ${report.groupName}`;
+      const body = formatWeekReport(report);
+
+      for (const director of directors) {
+        const address = addressFor(MessageChannel.TELEGRAM, director);
+        if (address === null) continue;
+
+        try {
+          await this.sender.send({ channel: MessageChannel.TELEGRAM, address, title, body });
+        } catch (error) {
+          this.logger.warn(`Отчёт Директору ${director.id} не доставлен: ${messageOf(error)}`);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Не удалось разослать отчёт о финализации: ${messageOf(error)}`);
+    }
   }
 
   /**
@@ -754,6 +801,19 @@ const studentsWithData = (week: WeekDetailRow): string[] => [
 
 const fullName = (person: { firstName: string; lastName: string }): string =>
   `${person.lastName} ${person.firstName}`;
+
+/** Текст отчёта Директору о финализированной неделе (ТЗ 5.8). */
+const formatWeekReport = (report: WeekSubmittedDto['report']): string =>
+  [
+    `Группа: ${report.groupName}`,
+    `Неделя ${String(report.weekNumber)} (с ${report.startDate})`,
+    `Студентов с итогом: ${String(report.studentsCount)}`,
+    `Средний балл: ${report.averageSum === null ? '—' : String(report.averageSum)}`,
+    `Начислено коинов: ${String(report.coinsAwarded)}`,
+  ].join('\n');
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 const endDateOf = (week: WeekDetailRow | WeekSummaryRow): string | null => {
   const last = week.days.at(-1);

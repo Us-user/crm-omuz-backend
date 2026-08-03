@@ -56,7 +56,10 @@ export class MailingDeliveryService {
         channel: delivery.channel,
         address: delivery.address,
         title: delivery.mailing.title,
-        body: delivery.mailing.body,
+        // Персональный текст строки, если он есть (поздравление с ДР),
+        // иначе общий текст рассылки — колонку заводят только когда тексты
+        // действительно разошлись (заметка 0036).
+        body: delivery.body ?? delivery.mailing.body,
       });
     } catch (error) {
       const reason = messageOf(error);

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { MailingAudience, MessageChannel } from '@prisma/client';
-import { NotificationStatus } from '@prisma/client';
+import type { MessageChannel } from '@prisma/client';
+import { MailingAudience, NotificationStatus } from '@prisma/client';
 
 import { BusinessRuleException, Paginated } from '../common';
 import type {
@@ -13,6 +13,7 @@ import type {
   MailingSendResultDto,
   NotificationDto,
   NotificationQueryDto,
+  SendGroupMailingDto,
   UpdateMailingDto,
 } from './dto';
 import { MailingDispatcher } from './mailing-dispatcher';
@@ -25,6 +26,8 @@ import {
   MAX_MAILING_RECIPIENTS,
   MailingStatus,
   mailingStatusOf,
+  NO_ADDRESS_REASON,
+  personalBodyOf,
   recipientNameOf,
   recipientTypeOf,
 } from './mailings';
@@ -36,8 +39,9 @@ import type {
 } from './mailings.repository';
 import { MailingsRepository } from './mailings.repository';
 
-/** Пометка в строке доставки, когда адреса канала у получателя нет. */
-export const NO_ADDRESS_REASON = 'Адрес канала у получателя не указан';
+// `NO_ADDRESS_REASON` переехал в чистый модуль `mailings.ts` (его теперь читает
+// и системная отправка), но остаётся доступен по прежнему адресу.
+export { NO_ADDRESS_REASON };
 
 /**
  * Рассылки (ТЗ 5.19).
@@ -80,6 +84,7 @@ export class MailingsService {
   }
 
   async create(dto: CreateMailingDto, accountId: string): Promise<MailingDto> {
+    assertComposableAudience(dto.audience);
     const { title, body, templateId } = await this.resolveText(dto.title, dto.body, dto.templateId);
     const groupId = await this.resolveGroup(dto.audience, dto.groupId);
 
@@ -105,6 +110,7 @@ export class MailingsService {
   async update(id: string, dto: UpdateMailingDto): Promise<MailingDto> {
     const existing = await this.require(id);
     assertDraft(existing, 'изменить');
+    if (dto.audience !== undefined) assertComposableAudience(dto.audience);
 
     // Правило «текст обязателен» проверяется по **итоговому** состоянию:
     // передать можно одно поле, и сверять его с пустотой значило бы требовать
@@ -190,7 +196,7 @@ export class MailingsService {
     }
 
     const seeds = recipients.map((recipient) =>
-      seedOf(recipient, mailing.channel, mailing.audience),
+      seedOf(recipient, mailing.channel, mailing.audience, mailing.body),
     );
 
     const sent = await this.repository.markSent({
@@ -286,12 +292,76 @@ export class MailingsService {
     });
   }
 
-  private async list(query: MailingQueryDto, sent?: boolean): Promise<Paginated<MailingDto>> {
+  /**
+   * Рассылка ментора своей группе (ТЗ 5.4: пункт меню «SMS mailings» ведёт
+   * в модуль рассылок — 0023).
+   *
+   * Живёт в модуле рассылок, а не в кабинете ментора, ровно поэтому: это та же
+   * машинерия составления и отправки, только суженная своей группой. Права
+   * каталога не требуется — как у аванса о себе (0023): ментор адресует рассылку
+   * **своей** группе, что проверяется менторством, а не разрешением «писать любой
+   * группе». Чужая группа — 422 (адрес найден, не найдено то, что в теле, — 0006).
+   *
+   * Внутри переиспользуются `create` + `send`: аудитория `GROUP`, автор
+   * и отправитель — сам ментор из токена. Отдельного пути отправки нет — второй
+   * разошёлся бы с общим на первом же правиле.
+   */
+  async sendGroupMailing(
+    accountId: string,
+    dto: SendGroupMailingDto,
+  ): Promise<MailingSendResultDto> {
+    const employee = await this.requireEmployee(accountId);
+
+    const isMentor = await this.repository.isGroupMentor(employee.id, dto.groupId);
+    if (!isMentor) {
+      throw new BusinessRuleException('Вы не ведёте эту группу', { groupId: dto.groupId });
+    }
+
+    const mailing = await this.create(
+      {
+        audience: MailingAudience.GROUP,
+        groupId: dto.groupId,
+        channel: dto.channel,
+        title: dto.title,
+        body: dto.body,
+      },
+      accountId,
+    );
+
+    return this.send(mailing.id, accountId);
+  }
+
+  /**
+   * Свои рассылки ментора (ТЗ 5.4). Список сужен автором из токена, а не
+   * идентификатором из пути: чужие рассылки сюда не попадают по построению —
+   * то же правило «всё адресуется от токена», что во всём кабинете (0017, 0023).
+   */
+  async findByAuthor(accountId: string, query: MailingQueryDto): Promise<Paginated<MailingDto>> {
+    const employee = await this.requireEmployee(accountId);
+
+    return this.list(query, query.sent, employee.id);
+  }
+
+  private async requireEmployee(accountId: string): Promise<{ id: string }> {
+    const employee = await this.repository.findEmployeeByAccount(accountId);
+    if (!employee) {
+      throw new NotFoundException('Профиль сотрудника не найден');
+    }
+
+    return employee;
+  }
+
+  private async list(
+    query: MailingQueryDto,
+    sent?: boolean,
+    createdById?: string,
+  ): Promise<Paginated<MailingDto>> {
     const { rows, total } = await this.repository.findMailings({
       search: query.search,
       audience: query.audience,
       channel: query.channel,
       groupId: query.groupId,
+      createdById,
       sent,
       sort: query.sort,
       order: query.order,
@@ -435,6 +505,7 @@ export const seedOf = (
   recipient: RecipientRow,
   channel: MessageChannel,
   audience: MailingAudience,
+  body: string,
 ): NotificationSeed => {
   const type = recipientTypeOf(audience);
   const address = addressFor(channel, recipient);
@@ -445,6 +516,9 @@ export const seedOf = (
     recipientType: type,
     recipientName: recipientNameOf(recipient.firstName, recipient.lastName),
     address: address ?? '',
+    // Персональный текст — только когда в шаблоне была подстановка (0036):
+    // у обычной рассылки без `{{…}}` здесь `null`, и строка остаётся лёгкой.
+    body: personalBodyOf(body, recipient),
     studentId: type === 'STUDENT' ? recipient.id : null,
     employeeId: type === 'EMPLOYEE' ? recipient.id : null,
     leadId: type === 'LEAD' ? recipient.id : null,
@@ -456,6 +530,21 @@ export const seedOf = (
 /** Счётчики прямо из заготовок — до того, как их прочитают обратно из БД. */
 const countSeeds = (seeds: readonly NotificationSeed[]): DeliveryCounts =>
   countDeliveries(seeds.map((seed) => ({ status: seed.status, count: 1 })));
+
+/**
+ * Аудиторию `SYSTEM` в форме выбрать нельзя (422): её получателей вычисляет
+ * фоновая задача (поздравления с ДР, ТЗ 3.4), а не оператор. Без этой проверки
+ * составитель мог бы завести «системную» рассылку руками — форма отправки такой
+ * аудитории не знает, и получателей у неё не оказалось бы вовсе.
+ */
+const assertComposableAudience = (audience: MailingAudience): void => {
+  if (audience === MailingAudience.SYSTEM) {
+    throw new BusinessRuleException(
+      'Аудитория SYSTEM зарезервирована для системных рассылок и в форме не выбирается',
+      { audience },
+    );
+  }
+};
 
 /** Отправленная рассылка не правится, не удаляется и не отправляется второй раз. */
 const assertDraft = (mailing: MailingRow, action: string): void => {

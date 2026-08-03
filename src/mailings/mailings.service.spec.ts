@@ -53,6 +53,7 @@ interface Repo {
   findLeads: jest.Mock;
   findGraduates: jest.Mock;
   findEmployeeByAccount: jest.Mock;
+  isGroupMentor: jest.Mock;
 }
 
 const build = (): { service: MailingsService; repo: Repo; enqueue: jest.Mock } => {
@@ -87,6 +88,7 @@ const build = (): { service: MailingsService; repo: Repo; enqueue: jest.Mock } =
     findLeads: jest.fn().mockResolvedValue([person({ id: 'l1' })]),
     findGraduates: jest.fn().mockResolvedValue([person({ id: 's9' })]),
     findEmployeeByAccount: jest.fn().mockResolvedValue({ id: 'emp-1' }),
+    isGroupMentor: jest.fn().mockResolvedValue(true),
   };
 
   const enqueue = jest.fn().mockResolvedValue(undefined);
@@ -560,5 +562,55 @@ describe('MailingsService — доставки', () => {
       NotFoundException,
     );
     expect(repo.findNotifications).not.toHaveBeenCalled();
+  });
+});
+
+describe('MailingsService — рассылки ментора (ТЗ 5.4)', () => {
+  const sendDto = {
+    groupId: 'g1',
+    channel: MessageChannel.TELEGRAM,
+    title: 'Перенос',
+    body: 'Занятие в 14:00',
+  };
+
+  it('чужую группу не рассылает: 422 и рассылка не заводится', async () => {
+    const { service, repo } = build();
+    repo.isGroupMentor.mockResolvedValue(false);
+
+    await expect(service.sendGroupMailing('acc-1', sendDto)).rejects.toBeInstanceOf(
+      BusinessRuleException,
+    );
+    expect(repo.isGroupMentor).toHaveBeenCalledWith('emp-1', 'g1');
+    expect(repo.createMailing).not.toHaveBeenCalled();
+  });
+
+  it('своей группе — заводит рассылку GROUP от своего имени и отправляет', async () => {
+    const { service, repo } = build();
+
+    await service.sendGroupMailing('acc-1', sendDto);
+
+    expect(repo.isGroupMentor).toHaveBeenCalledWith('emp-1', 'g1');
+    expect(repo.createMailing).toHaveBeenCalledWith(
+      expect.objectContaining({ audience: 'GROUP', groupId: 'g1', createdById: 'emp-1' }),
+    );
+  });
+
+  it('нет профиля сотрудника — 404', async () => {
+    const { service, repo } = build();
+    repo.findEmployeeByAccount.mockResolvedValue(null);
+
+    await expect(service.sendGroupMailing('acc-1', sendDto)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('свои рассылки: список сужен автором из токена', async () => {
+    const { service, repo } = build();
+
+    await service.findByAuthor('acc-1', query);
+
+    expect(repo.findMailings).toHaveBeenCalledWith(
+      expect.objectContaining({ createdById: 'emp-1' }),
+    );
   });
 });

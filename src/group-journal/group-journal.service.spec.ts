@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { AttendanceMark, GroupStudentStatus, LessonType } from '@prisma/client';
+import { AttendanceMark, GroupStudentStatus, LessonType, MessageChannel } from '@prisma/client';
 
 import { BusinessRuleException, SortOrder } from '../common';
 import { JournalQueryDto, JournalWeekSortField } from './dto';
@@ -103,6 +103,7 @@ describe('GroupJournalService', () => {
       | 'submitWeek'
       | 'deleteWeek'
       | 'findEmployeeByAccount'
+      | 'findActiveDirectors'
     >
   >;
   let service: GroupJournalService;
@@ -127,9 +128,63 @@ describe('GroupJournalService', () => {
         .mockResolvedValue(week({ submittedAt: new Date('2026-09-12T17:00:00.000Z') })),
       deleteWeek: jest.fn().mockResolvedValue(undefined),
       findEmployeeByAccount: jest.fn().mockResolvedValue({ id: EMPLOYEE_ID }),
+      findActiveDirectors: jest.fn().mockResolvedValue([]),
     };
 
     service = new GroupJournalService(repository as unknown as GroupJournalRepository);
+  });
+
+  describe('Отчёт Директору при финализации (0018)', () => {
+    const DIRECTOR = {
+      id: 'dir-1',
+      firstName: 'Иван',
+      lastName: 'Директоров',
+      telegram: '@director',
+      phone: null,
+      email: null,
+    };
+
+    const withSender = (send: jest.Mock): GroupJournalService =>
+      new GroupJournalService(repository as unknown as GroupJournalRepository, {
+        send,
+      });
+
+    it('после финализации уходит адресатам с адресом канала', async () => {
+      const send = jest.fn().mockResolvedValue(undefined);
+      repository.findActiveDirectors.mockResolvedValue([DIRECTOR]);
+
+      await withSender(send).submit(GROUP_ID, WEEK_ID, ACTOR_ACCOUNT_ID);
+
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: MessageChannel.TELEGRAM, address: '@director' }),
+      );
+    });
+
+    it('директор без адреса канала пропускается', async () => {
+      const send = jest.fn().mockResolvedValue(undefined);
+      repository.findActiveDirectors.mockResolvedValue([{ ...DIRECTOR, telegram: null }]);
+
+      await withSender(send).submit(GROUP_ID, WEEK_ID, ACTOR_ACCOUNT_ID);
+
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('сбой доставки не роняет финализацию', async () => {
+      const send = jest.fn().mockRejectedValue(new Error('провайдер недоступен'));
+      repository.findActiveDirectors.mockResolvedValue([DIRECTOR]);
+
+      await expect(
+        withSender(send).submit(GROUP_ID, WEEK_ID, ACTOR_ACCOUNT_ID),
+      ).resolves.toBeDefined();
+    });
+
+    it('без отправителя доставка не запрашивается вовсе', async () => {
+      // `service` из beforeEach построен без `MessageSender`.
+      await service.submit(GROUP_ID, WEEK_ID, ACTOR_ACCOUNT_ID);
+
+      expect(repository.findActiveDirectors).not.toHaveBeenCalled();
+    });
   });
 
   describe('Список недель', () => {

@@ -7,6 +7,8 @@ import { MailingTemplatesService } from './mailing-templates.service';
 import { MailingsController } from './mailings.controller';
 import { MailingsRepository } from './mailings.repository';
 import { MailingsService } from './mailings.service';
+import { MentorMailingsController } from './mentor-mailings.controller';
+import { SystemMailingService } from './system-mailing.service';
 
 /**
  * Рассылки и шаблоны (ТЗ 5.19).
@@ -24,14 +26,18 @@ import { MailingsService } from './mailings.service';
  * `PrismaService` и `MessageSender` — из глобальных модулей.
  */
 @Module({
-  controllers: [MailingTemplatesController, MailingsController],
+  controllers: [MailingTemplatesController, MailingsController, MentorMailingsController],
   providers: [
     MailingsService,
     MailingTemplatesService,
     MailingDeliveryService,
+    SystemMailingService,
     MailingsRepository,
     { provide: MailingDispatcher, useClass: QueueMailingDispatcher },
   ],
-  exports: [MailingDeliveryService],
+  // `SystemMailingService`, репозиторий и диспетчер экспортируются для
+  // `SchedulingModule` (поздравления с ДР, уборка доставок): системная отправка
+  // и постановка в очередь — та же машинерия рассылок, а не её копия.
+  exports: [MailingDeliveryService, SystemMailingService, MailingsRepository, MailingDispatcher],
 })
 export class MailingsModule {}

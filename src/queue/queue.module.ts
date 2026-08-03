@@ -44,6 +44,9 @@ import { QUEUE_NAMES } from './queue.constants';
       },
     }),
     BullModule.registerQueue({ name: QUEUE_NAMES.Notifications }),
+    // Очередь повторяющихся задач по расписанию (ТЗ 3.4). Регистрируется здесь,
+    // чтобы и планировщик, и обработчик получали её через `@InjectQueue`.
+    BullModule.registerQueue({ name: QUEUE_NAMES.Scheduled }),
   ],
   exports: [BullModule],
 })

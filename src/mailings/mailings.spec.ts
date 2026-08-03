@@ -8,8 +8,10 @@ import {
   MAX_MAILING_RECIPIENTS,
   MailingStatus,
   mailingStatusOf,
+  personalBodyOf,
   recipientNameOf,
   recipientTypeOf,
+  renderMessage,
 } from './mailings';
 
 const counts = (
@@ -189,5 +191,45 @@ describe('recipientNameOf', () => {
 describe('MAX_MAILING_RECIPIENTS', () => {
   it('совпадает с потолком выгрузки лидов (0028)', () => {
     expect(MAX_MAILING_RECIPIENTS).toBe(5000);
+  });
+});
+
+describe('renderMessage (подстановка переменных)', () => {
+  const vars = { firstName: 'Умед', lastName: 'Каримов' };
+
+  it('подставляет firstName, lastName и fullName', () => {
+    expect(renderMessage('Привет, {{firstName}}!', vars)).toBe('Привет, Умед!');
+    expect(renderMessage('{{lastName}} {{firstName}}', vars)).toBe('Каримов Умед');
+    expect(renderMessage('{{fullName}}', vars)).toBe('Умед Каримов');
+  });
+
+  it('терпит пробелы внутри скобок', () => {
+    expect(renderMessage('С ДР, {{ firstName }}!', vars)).toBe('С ДР, Умед!');
+  });
+
+  it('несколько вхождений одной переменной', () => {
+    expect(renderMessage('{{firstName}}, {{firstName}}!', vars)).toBe('Умед, Умед!');
+  });
+
+  it('неизвестный плейсхолдер остаётся как есть', () => {
+    expect(renderMessage('Привет, {{firstname}}!', vars)).toBe('Привет, {{firstname}}!');
+  });
+
+  it('текст без плейсхолдеров не меняется', () => {
+    expect(renderMessage('Общее объявление', vars)).toBe('Общее объявление');
+  });
+});
+
+describe('personalBodyOf', () => {
+  const vars = { firstName: 'Умед', lastName: 'Каримов' };
+
+  it('null, когда подставлять нечего (текст дословно равен исходному)', () => {
+    expect(personalBodyOf('Общее объявление', vars)).toBeNull();
+    // Неизвестный плейсхолдер тоже не меняет текст — копию не заводим.
+    expect(personalBodyOf('Привет, {{unknown}}', vars)).toBeNull();
+  });
+
+  it('персональную копию, когда подстановка была', () => {
+    expect(personalBodyOf('С ДР, {{firstName}}!', vars)).toBe('С ДР, Умед!');
   });
 });

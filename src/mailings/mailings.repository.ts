@@ -79,6 +79,8 @@ const DELIVERY_SELECT = {
   address: true,
   status: true,
   attempts: true,
+  // Персональный текст доставки (`null` — брать общий из рассылки).
+  body: true,
   mailing: { select: { id: true, title: true, body: true } },
 } satisfies Prisma.NotificationSelect;
 
@@ -135,6 +137,8 @@ export interface MailingListParams {
   audience?: MailingAudience;
   channel?: MessageChannel;
   groupId?: string;
+  /** Автор рассылки — под список «свои рассылки» кабинета ментора (ТЗ 5.4). */
+  createdById?: string;
   /** `true` — только отправленные, `false` — только черновики. */
   sent?: boolean;
   sort: MailingSortField;
@@ -162,6 +166,8 @@ export interface NotificationSeed {
   recipientType: NotificationRecipientType;
   recipientName: string;
   address: string;
+  /** Персональный текст после подстановки; `null` — брать общий из рассылки. */
+  body: string | null;
   studentId: string | null;
   employeeId: string | null;
   leadId: string | null;
@@ -205,6 +211,7 @@ const mailingWhereOf = (params: MailingListParams): Prisma.MailingWhereInput => 
   if (params.audience !== undefined) conditions.push({ audience: params.audience });
   if (params.channel !== undefined) conditions.push({ channel: params.channel });
   if (params.groupId !== undefined) conditions.push({ groupId: params.groupId });
+  if (params.createdById !== undefined) conditions.push({ createdById: params.createdById });
   if (params.sent !== undefined) {
     conditions.push(params.sent ? { sentAt: { not: null } } : { sentAt: null });
   }
@@ -329,6 +336,20 @@ export class MailingsRepository {
   /** Существует ли группа — проверяется своим запросом, как у выпускников (0026). */
   findGroup(id: string): Promise<{ id: string; name: string } | null> {
     return this.prisma.group.findUnique({ where: { id }, select: { id: true, name: true } });
+  }
+
+  /**
+   * Ведёт ли сотрудник эту группу — под рассылку ментора своей группе (ТЗ 5.4).
+   * Тот же запрос, что у `findAssignment` кабинета ментора (0023): чужую
+   * и несуществующую группу различать незачем — ментору отказывают одинаково.
+   */
+  async isGroupMentor(employeeId: string, groupId: string): Promise<boolean> {
+    const found = await this.prisma.groupMentor.findUnique({
+      where: { groupId_employeeId: { groupId, employeeId } },
+      select: { groupId: true },
+    });
+
+    return found !== null;
   }
 
   // --- Доставки ---------------------------------------------------------
@@ -546,5 +567,104 @@ export class MailingsRepository {
   /** Профиль сотрудника, стоящего за токеном (приём 0026, 0029). */
   findEmployeeByAccount(accountId: string): Promise<{ id: string } | null> {
     return this.prisma.employee.findUnique({ where: { accountId }, select: { id: true } });
+  }
+
+  // --- Системные рассылки (поздравления с ДР, ТЗ 3.4) -------------------
+
+  /**
+   * Системная рассылка вместе со строками доставки — одной транзакцией, как
+   * `markSent`. Аудитория `SYSTEM`, автор и отправитель `null` (её завёл
+   * не человек), `sentAt` проставляется сразу: черновиком системная рассылка
+   * не бывает.
+   *
+   * `systemKey` уникален, поэтому повторный прогон задачи за ту же дату упадёт
+   * с `P2002` — на этом и держится идемпотентность (сервис ловит его и просто
+   * ничего не делает). Возвращает `id` заведённой рассылки.
+   */
+  async createSystemMailing(params: {
+    systemKey: string;
+    channel: MessageChannel;
+    title: string;
+    body: string;
+    sentAt: Date;
+    notifications: NotificationSeed[];
+  }): Promise<string> {
+    return this.prisma.$transaction(async (tx) => {
+      const mailing = await tx.mailing.create({
+        data: {
+          title: params.title,
+          body: params.body,
+          channel: params.channel,
+          audience: 'SYSTEM',
+          systemKey: params.systemKey,
+          sentAt: params.sentAt,
+        },
+        select: { id: true },
+      });
+
+      await tx.notification.createMany({
+        data: params.notifications.map((seed) => ({ ...seed, mailingId: mailing.id })),
+      });
+
+      return mailing.id;
+    });
+  }
+
+  /**
+   * Действующие студенты, у которых сегодня день рождения (ТЗ 3.4).
+   *
+   * Сравнение месяца и дня требует `EXTRACT`, которого построитель запросов
+   * Prisma не выражает, — отсюда сырой SQL. Дата приходит уже в календаре
+   * центра (UTC+5): «сегодня» вычисляет сервис, репозиторий лишь отбирает
+   * по паре (месяц, день). Родившиеся 29 февраля в невисокосный год не
+   * совпадут ни с чем — редкий край, оставлен как есть.
+   */
+  findStudentsBornOn(month: number, day: number): Promise<RecipientRow[]> {
+    return this.prisma.$queryRaw<RecipientRow[]>`
+      SELECT "id", "firstName", "lastName", "telegram", "phone", "email"
+      FROM "students"
+      WHERE "status" = 'ACTIVE'
+        AND "birthDate" IS NOT NULL
+        AND EXTRACT(MONTH FROM "birthDate") = ${month}
+        AND EXTRACT(DAY FROM "birthDate") = ${day}
+      ORDER BY "lastName" ASC, "firstName" ASC, "id" ASC
+    `;
+  }
+
+  /**
+   * Активный шаблон поздравления по зарезервированному имени. Позволяет центру
+   * переписать текст через обычный CRUD шаблонов (ТЗ 5.19), не трогая код;
+   * если такого шаблона нет, сервис берёт встроенный текст по умолчанию.
+   */
+  findActiveTemplateByName(
+    name: string,
+  ): Promise<{ title: string; body: string; channel: MessageChannel | null } | null> {
+    return this.prisma.smsTemplate.findFirst({
+      where: { status: 'ACTIVE', name: { equals: name, mode: 'insensitive' } },
+      select: { title: true, body: true, channel: true },
+    });
+  }
+
+  /**
+   * Зависшие доставки: `PENDING` у **уже отправленной** рассылки, созданные
+   * раньше порога. Такая строка означает задачу, которая до очереди не дошла
+   * (приложение упало между фиксацией транзакции и `addBulk`, 0036) или в ней
+   * потерялась. Порог отсекает свежие доставки, которые просто ещё не успел
+   * взять воркер. Возвращаются идентификаторы — их переставит в очередь тот же
+   * механизм, что и ручной повтор; обработчик берёт только `PENDING`, поэтому
+   * лишняя задача безвредна.
+   */
+  async findStuckPendingIds(before: Date, limit: number): Promise<string[]> {
+    const rows = await this.prisma.notification.findMany({
+      where: {
+        status: 'PENDING',
+        createdAt: { lt: before },
+        mailing: { sentAt: { not: null } },
+      },
+      select: { id: true },
+      take: limit,
+    });
+
+    return rows.map(({ id }) => id);
   }
 }

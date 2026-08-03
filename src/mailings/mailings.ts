@@ -96,6 +96,9 @@ export const mailingStatusOf = (sentAt: Date | null, counts: DeliveryCounts): Ma
   return MailingStatus.SENT;
 };
 
+/** Пометка в строке доставки, когда адреса канала у получателя нет. */
+export const NO_ADDRESS_REASON = 'Адрес канала у получателя не указан';
+
 /** Контакты получателя в том виде, в каком их читает выбор адреса. */
 export interface RecipientContacts {
   telegram: string | null;
@@ -146,6 +149,54 @@ export const audienceNeedsGroup = (audience: MailingAudience): boolean =>
 /** Имя получателя для строки истории — снимок на момент отправки. */
 export const recipientNameOf = (firstName: string, lastName: string): string =>
   `${firstName} ${lastName}`.trim();
+
+/** Переменные, которые подставляются в текст сообщения (ТЗ 3.4). */
+export interface MessageVariables {
+  firstName: string;
+  lastName: string;
+}
+
+/** Плейсхолдер `{{ имя }}` — буквы/цифры внутри двойных фигурных скобок. */
+const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
+
+/**
+ * Подстановка переменных вида `{{firstName}}` в текст рассылки.
+ *
+ * Нужна ради поздравлений с ДР (ТЗ 3.4): «С днём рождения, {{firstName}}!»
+ * без подстановки было бы безличным письмом всем сразу. Отсюда же берёт смысл
+ * колонка `Notification.body` — до подстановок текст был один на всех, и копия
+ * в каждой строке доставки была бы вторым источником истины (заметка 0036).
+ *
+ * **Неизвестный плейсхолдер остаётся как есть**, а не превращается в пустоту:
+ * `{{firstname}}` с опечаткой должен броситься в глаза составителю, а не молча
+ * исчезнуть из письма (то же правило видимого пробела, что у `SKIPPED`, 0036).
+ * Практическое следствие, на котором держится хранение: если подставлять
+ * нечего, результат **дословно равен** исходному тексту — и тогда персональную
+ * копию не заводят.
+ */
+export const renderMessage = (text: string, vars: MessageVariables): string => {
+  const values: Record<string, string> = {
+    firstName: vars.firstName,
+    lastName: vars.lastName,
+    fullName: recipientNameOf(vars.firstName, vars.lastName),
+  };
+
+  return text.replace(PLACEHOLDER, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match,
+  );
+};
+
+/**
+ * Персональный текст для строки доставки — или `null`, если подставлять было
+ * нечего. `null`, а не копия исходного текста: обработчик читает `body ?? mailing.body`,
+ * поэтому у рассылки без подстановок строки доставки остаются лёгкими, а второй
+ * источник истины о тексте не заводится (заметка 0036).
+ */
+export const personalBodyOf = (template: string, vars: MessageVariables): string | null => {
+  const rendered = renderMessage(template, vars);
+
+  return rendered === template ? null : rendered;
+};
 
 /**
  * Потолок аудитории одной рассылки. Тот же, что у выгрузки лидов (0028):
