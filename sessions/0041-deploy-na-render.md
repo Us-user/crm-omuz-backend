@@ -221,4 +221,11 @@ Blueprint на три сервиса: `omuz-postgres` (free, PG 16), `omuz-keyva
 
 ## Коммит
 
-- (заполняется после пуша)
+- `f7b76a4` — «Деплой на Render: Blueprint, поддержка REDIS_URL и первый
+  руководитель» (12 файлов). Запушен в `main`.
+- На коммите прогнан **зелёный CI** (run `30890213298`): lint → typecheck →
+  `npm test` (2117 тестов, 105 наборов) → `migrate deploy` → e2e (1259 тестов,
+  **34 набора из 34**, включая `health.e2e` с полным `AppModule` против
+  настоящих PostgreSQL и Redis — то есть приложение с `SeedBootstrapModule`
+  поднимается).
+- Репозиторий: https://github.com/Us-user/crm-omuz-backend
