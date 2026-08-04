@@ -1,0 +1,130 @@
+# Blueprint для Render: API + PostgreSQL + Key Value (Redis).
+#
+# Как применить: Render Dashboard → Blueprints → New Blueprint Instance →
+# выбрать этот репозиторий. Render прочитает этот файл и заведёт все три сервиса.
+#
+# Что придётся ввести руками: переменные с `sync: false` (данные первого
+# руководителя). Всё остальное Render проставит сам — включая секреты
+# и строки подключения.
+#
+# Про бесплатные планы, чтобы не было сюрпризов:
+#   - **база живёт 30 дней** с момента создания, потом истекает;
+#   - **веб-сервис засыпает** после 15 минут простоя, первый запрос
+#     после сна идёт до минуты (фронтенду это надо знать заранее);
+#   - **Key Value не сохраняет данные** на диск: при перезапуске очередь
+#     и счётчики лимитов пусты. Для них это допустимо.
+
+databases:
+  - name: omuz-postgres
+    plan: free
+    # Регион у всех трёх сервисов обязан совпадать: иначе внутренние адреса
+    # PostgreSQL и Key Value недоступны, и подключение пойдёт через интернет.
+    region: frankfurt
+    databaseName: crm_omuz
+    user: omuz
+    postgresMajorVersion: '16'
+
+services:
+  # --- Redis-совместимое хранилище: очереди BullMQ и счётчики лимитов ---
+  - type: keyvalue
+    name: omuz-keyvalue
+    plan: free
+    region: frankfurt
+    # Пустой список = подключения только изнутри Render. Наружу это хранилище
+    # смотреть не должно: в нём лежат счётчики лимитов и задачи рассылок.
+    ipAllowList: []
+
+  # --- API ---
+  - type: web
+    name: omuz-api
+    runtime: node
+    plan: free
+    region: frankfurt
+
+    # `npm ci` ставит и dev-зависимости — из них нужны `prisma` (миграции)
+    # и `@nestjs/cli` (сборка). Именно поэтому выбран нативный рантайм,
+    # а не наш Dockerfile: тот выкидывает dev-зависимости, и мигрировать
+    # в рантайме было бы нечем.
+    buildCommand: npm ci && npx prisma generate && npm run build
+
+    # Миграции применяются перед каждым стартом. `migrate deploy` идемпотентен:
+    # уже применённые не повторяются. Первого руководителя заводит само
+    # приложение при старте (см. SEED_ADMIN_* ниже).
+    startCommand: npx prisma migrate deploy && node dist/main.js
+
+    # `/health` вынесен из префикса /api/v1 (решение 0001) и отвечает 200
+    # даже в состоянии `degraded` — Render не должен перезапускать сервис
+    # из-за упавшего Redis, пока сам API работает.
+    healthCheckPath: /health
+
+    envVars:
+      - key: NODE_VERSION
+        value: '22'
+      - key: NODE_ENV
+        value: production
+
+      # Строки подключения Render подставляет сам.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: omuz-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: omuz-keyvalue
+          property: connectionString
+
+      # Секреты: Render генерирует 256-битные значения (44 символа base64),
+      # схема окружения требует не менее 32 — проходит с запасом.
+      # Все три обязаны быть разными, и generateValue это обеспечивает.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: PASSWORD_RESET_SECRET
+        generateValue: true
+
+      # Render стоит за обратным прокси. Без этого адрес клиента у всех один
+      # (адрес балансировщика), и лимит частоты запросов закрыл бы вход
+      # всему центру разом. От него же зависят адрес в сессии и в журнале.
+      - key: TRUST_PROXY
+        value: '1'
+
+      # Откуда фронту разрешено ходить. Пустое значение выключает CORS вовсе —
+      # браузер не пустит ни один запрос. Домен прода добавляется сюда позже
+      # одной правкой в дашборде, пересборка не нужна.
+      - key: CORS_ORIGINS
+        value: http://localhost:5173,http://localhost:3000
+
+      - key: LOG_LEVEL
+        value: info
+      - key: SWAGGER_ENABLED
+        value: 'true'
+      - key: DEFAULT_PHONE_REGION
+        value: TJ
+      - key: CENTER_UTC_OFFSET_MINUTES
+        value: '300'
+      - key: RATE_LIMIT_ENABLED
+        value: 'true'
+      - key: SCHEDULED_TASKS_ENABLED
+        value: 'true'
+      - key: MAIL_FROM
+        value: no-reply@omuz.tj
+
+      # --- Первый руководитель ---
+      # Заполняются в дашборде при создании (`sync: false` — Render спросит).
+      # Без них в CRM не войти никому: регистрация создаёт только студентов,
+      # а раздача ролей требует прав, которых на пустой базе нет.
+      # Операция идемпотентна — существующий аккаунт не трогается и пароль
+      # не меняется. После первого входа переменные можно удалить.
+      - key: SEED_ADMIN_PHONE
+        sync: false
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_FIRST_NAME
+        sync: false
+      - key: SEED_ADMIN_LAST_NAME
+        sync: false
+      # Обязателен: при старте пароль не генерируется — показать его негде.
+      - key: SEED_ADMIN_PASSWORD
+        sync: false

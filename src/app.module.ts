@@ -40,6 +40,7 @@ import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
+import { SeedBootstrapModule } from './seed/seed-bootstrap.module';
 import { StudentAccessModule } from './student-access/student-access.module';
 import { StudentCabinetModule } from './student-cabinet/student-cabinet.module';
 import { StudentCoinsModule } from './student-coins/student-coins.module';
@@ -113,6 +114,10 @@ import { TimetableModule } from './timetable/timetable.module';
     // Фоновые задачи по расписанию (поздравления с ДР, уборка доставок,
     // автозакрытие рейтинга) — тоже воркер BullMQ, потому и отдельным модулем.
     SchedulingModule,
+    // Заведение первого руководителя при старте, если заданы `SEED_ADMIN_*`
+    // (площадки без shell, где `npm run seed:admin` запустить нечем).
+    // Эндпоинтов не добавляет.
+    SeedBootstrapModule,
     HealthModule,
   ],
   providers: [

@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { EnvironmentVariables, LogLevel, NodeEnv } from './env.validation';
+import type { RedisConnectionOptions } from './redis-url';
+import { parseRedisUrl } from './redis-url';
 
 /**
  * Типобезопасная обёртка над `ConfigService`: остальной код не обращается
@@ -117,12 +119,70 @@ export class AppConfigService {
       .filter(Boolean);
   }
 
-  get redis(): { host: string; port: number; password?: string; db: number } {
+  /**
+   * Подключение к Redis. `REDIS_URL` **перекрывает** поля по отдельности:
+   * облачные провайдеры выдают строку, и держать рядом второй, частично
+   * заполненный набор значило бы иметь два источника истины об одном адресе.
+   */
+  get redis(): RedisConnectionOptions {
+    const url = this.get('REDIS_URL')?.trim();
+    if (url) return parseRedisUrl(url);
+
     return {
       host: this.get('REDIS_HOST'),
       port: this.get('REDIS_PORT'),
       password: this.get('REDIS_PASSWORD'),
       db: this.get('REDIS_DB'),
+      tls: false,
     };
   }
+
+  /**
+   * Данные первого руководителя (решение сессии 0007) или `null`, если
+   * заведение при старте не настроено.
+   *
+   * Все четыре поля обязательны вместе: наполовину заполненный набор — это
+   * почти наверняка забытая переменная, и молча пропустить его значило бы
+   * оставить площадку без единого способа войти. Об этом предупреждает
+   * `AdminSeedBootstrap`.
+   */
+  get seedAdmin(): SeedAdminEnv | null {
+    const phone = this.get('SEED_ADMIN_PHONE');
+    const email = this.get('SEED_ADMIN_EMAIL');
+    const firstName = this.get('SEED_ADMIN_FIRST_NAME');
+    const lastName = this.get('SEED_ADMIN_LAST_NAME');
+
+    if (!phone || !email || !firstName || !lastName) return null;
+
+    return {
+      phone,
+      email,
+      firstName,
+      lastName,
+      middleName: this.get('SEED_ADMIN_MIDDLE_NAME'),
+      password: this.get('SEED_ADMIN_PASSWORD'),
+    };
+  }
+
+  /** Задана ли хотя бы одна переменная `SEED_ADMIN_*` — чтобы отличить «не настроено» от «настроено наполовину». */
+  get seedAdminPartiallyConfigured(): boolean {
+    return (
+      [
+        this.get('SEED_ADMIN_PHONE'),
+        this.get('SEED_ADMIN_EMAIL'),
+        this.get('SEED_ADMIN_FIRST_NAME'),
+        this.get('SEED_ADMIN_LAST_NAME'),
+      ].some(Boolean) && this.seedAdmin === null
+    );
+  }
+}
+
+/** Данные первого руководителя из окружения. */
+export interface SeedAdminEnv {
+  phone: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  middleName?: string;
+  password?: string;
 }

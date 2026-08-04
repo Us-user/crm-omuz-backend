@@ -13,13 +13,17 @@ export class RedisService implements OnModuleDestroy {
   readonly client: Redis;
 
   constructor(config: AppConfigService) {
-    const { host, port, password, db } = config.redis;
+    const { host, port, username, password, db, tls } = config.redis;
 
     this.client = new Redis({
       host,
       port,
+      username,
       password,
       db,
+      // `rediss://` у облачных провайдеров: пустой объект включает TLS
+      // с настройками по умолчанию, `undefined` оставляет обычное соединение.
+      tls: tls ? {} : undefined,
       lazyConnect: true,
       maxRetriesPerRequest: null,
       enableOfflineQueue: false,

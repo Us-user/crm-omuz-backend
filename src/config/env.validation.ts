@@ -7,6 +7,7 @@ import {
   IsISO31661Alpha2,
   IsOptional,
   IsString,
+  Matches,
   Max,
   Min,
   MinLength,
@@ -65,6 +66,18 @@ export class EnvironmentVariables {
   DATABASE_URL!: string;
 
   // --- Redis ---
+  /**
+   * Строка подключения целиком. Облачные провайдеры (Render Key Value, Upstash,
+   * Redis Cloud) выдают именно её, а не набор полей. **Задана — перекрывает**
+   * `REDIS_HOST`/`PORT`/`PASSWORD`/`DB`: два источника истины об одном
+   * подключении разошлись бы при первой же правке.
+   */
+  @IsOptional()
+  @Matches(/^rediss?:\/\//, {
+    message: 'REDIS_URL должен начинаться с redis:// или rediss://',
+  })
+  REDIS_URL?: string;
+
   @IsString()
   @MinLength(1)
   REDIS_HOST: string = '127.0.0.1';
@@ -163,6 +176,54 @@ export class EnvironmentVariables {
   @Transform(toBoolean)
   @IsBoolean()
   RATE_LIMIT_ENABLED: boolean = true;
+
+  // --- Первый руководитель (ТЗ 3.2, решение сессии 0007) ---
+  /**
+   * Заведение первого `Director` при старте приложения.
+   *
+   * Зачем это существует: система закрыта сама на себя — регистрация создаёт
+   * только студентов, а раздача ролей требует прав, которых на пустой базе
+   * нет ни у кого. Для этого есть `npm run seed:admin`, но **на площадках без
+   * доступа к shell** (бесплатный план Render, например) запустить его нечем,
+   * и CRM осталась бы недоступной вообще никому.
+   *
+   * Заполнены все четыре обязательных — при старте заводится руководитель.
+   * Операция идемпотентна: существующий аккаунт не трогается и пароль
+   * не меняется. После первого входа переменные можно убрать.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(5)
+  SEED_ADMIN_PHONE?: string;
+
+  @IsOptional()
+  @IsEmail()
+  SEED_ADMIN_EMAIL?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  SEED_ADMIN_FIRST_NAME?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  SEED_ADMIN_LAST_NAME?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  SEED_ADMIN_MIDDLE_NAME?: string;
+
+  /**
+   * Пароль первого руководителя. Проверяется здесь же, чтобы опечатка
+   * обнаружилась при старте, а не молчаливым «руководитель не завёлся»
+   * в середине лога (ТЗ 3.8: приложение не поднимается на плохой конфигурации).
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  SEED_ADMIN_PASSWORD?: string;
 
   // --- Наблюдаемость ---
   @IsEnum(LogLevel)

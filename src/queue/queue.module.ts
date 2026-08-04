@@ -25,13 +25,18 @@ import { QUEUE_NAMES } from './queue.constants';
       imports: [AppConfigModule],
       inject: [AppConfigService],
       useFactory: (config: AppConfigService) => {
-        const { host, port, password, db } = config.redis;
+        const { host, port, username, password, db, tls } = config.redis;
         return {
           connection: {
             host,
             port,
+            username,
             password,
             db,
+            // Настройки берутся тем же путём, что у `RedisService`: строку
+            // подключения (`REDIS_URL`) разбирает конфигурация, а не каждый
+            // потребитель по-своему.
+            tls: tls ? {} : undefined,
             retryStrategy: (times: number) => Math.min(times * 500, 10_000),
           },
           defaultJobOptions: {
