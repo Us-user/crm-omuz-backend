@@ -19,6 +19,7 @@ import { GroupStudentsModule } from './group-students/group-students.module';
 import { GraduatesModule } from './graduates/graduates.module';
 import { GroupsModule } from './groups/groups.module';
 import { HealthModule } from './health/health.module';
+import { JobsModule } from './jobs/jobs.module';
 import { LeadersModule } from './leaders/leaders.module';
 import { LeadsModule } from './leads/leads.module';
 import { LeftCoursesModule } from './left-courses/left-courses.module';
@@ -97,6 +98,9 @@ import { TimetableModule } from './timetable/timetable.module';
     SyllabusModule,
     TimetableModule,
     DashboardModule,
+    // Вакансии (ТЗ 5.18): список центра и его же актуальная часть в кабинете
+    // студента — оба контроллера приезжают одним модулем.
+    JobsModule,
     MailingsModule,
     // Обработчик очереди подключается отдельным модулем: он создаёт воркер
     // BullMQ, и e2e-наборам рассылок Redis для этого не нужен.
