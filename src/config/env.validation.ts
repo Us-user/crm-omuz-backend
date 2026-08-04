@@ -153,11 +153,36 @@ export class EnvironmentVariables {
   @IsBoolean()
   SCHEDULED_TASKS_ENABLED: boolean = true;
 
+  // --- Ограничение частоты запросов (ТЗ 3.8) ---
+  /**
+   * Включено ли ограничение частоты запросов на аутентификацию и сброс пароля.
+   * Выключатель нужен нагрузочным прогонам и локальной отладке; в проде его
+   * трогать незачем. Недоступный Redis лимит **не** выключает — он пропускает
+   * запросы сам (fail-open, см. `RateLimitService`).
+   */
+  @Transform(toBoolean)
+  @IsBoolean()
+  RATE_LIMIT_ENABLED: boolean = true;
+
   // --- Наблюдаемость ---
   @IsEnum(LogLevel)
   LOG_LEVEL: LogLevel = LogLevel.Info;
 
   // --- HTTP ---
+  /**
+   * Значение express `trust proxy`. **Обязательно на проде**, где приложение
+   * стоит за обратным прокси с HTTPS (ТЗ 3.8): без него `request.ip` — адрес
+   * прокси, то есть один на всех, и лимит по адресу закрыл бы вход всему
+   * центру разом, а в логах и сессиях стоял бы адрес балансировщика.
+   *
+   * Понимаются четыре формы: `true` (доверять ближайшему прокси целиком),
+   * `false`/пусто (не доверять), число (сколько хопов пропустить) и список
+   * адресов/подсетей через запятую (`loopback`, `10.0.0.0/8`, …).
+   */
+  @IsOptional()
+  @IsString()
+  TRUST_PROXY?: string;
+
   @Transform(toBoolean)
   @IsBoolean()
   SWAGGER_ENABLED: boolean = true;

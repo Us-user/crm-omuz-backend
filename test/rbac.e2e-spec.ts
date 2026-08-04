@@ -15,6 +15,10 @@ import { AppConfigModule } from 'src/config/config.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+// Лимиты частоты (Фаза 14) навешаны декоратором на эндпоинты auth,
+// поэтому guard должен быть в графе. Redis набору не нужен: без клиента
+// лимитер ничего не считает.
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
 import { buildOpenApiDocument } from 'src/swagger';
 import { PERMISSION_CATALOG } from 'src/rbac/permission-catalog';
 import { AdminUsersRepository } from 'src/rbac/admin-users.repository';
@@ -519,6 +523,7 @@ describe('RBAC: позиции и администрирование (e2e, хр�
         LoggerModule,
         MailerModule,
         PhoneModule,
+        RateLimitModule,
         AuthModule,
         RbacModule,
         RbacAdminModule,

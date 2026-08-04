@@ -42,6 +42,10 @@ import { MailingsRepository } from 'src/mailings/mailings.repository';
 import { MessageSender } from 'src/messaging';
 import { MessagingModule } from 'src/messaging/messaging.module';
 import { PhoneModule } from 'src/phone/phone.module';
+// Лимиты частоты (Фаза 14) навешаны декоратором на эндпоинты auth,
+// поэтому guard должен быть в графе. Redis набору не нужен: без клиента
+// лимитер ничего не считает.
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
 import { RbacModule } from 'src/rbac/rbac.module';
 import { RbacRepository } from 'src/rbac/rbac.repository';
 import { buildOpenApiDocument } from 'src/swagger';
@@ -588,6 +592,7 @@ describe('Рассылки и шаблоны (ТЗ 5.19)', () => {
         MailerModule,
         MessagingModule,
         PhoneModule,
+        RateLimitModule,
         AuthModule,
         RbacModule,
         MailingsModule,

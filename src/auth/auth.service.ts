@@ -6,12 +6,14 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { AccountStatus, Locale } from '@prisma/client';
 
 import { parseIsoDate } from '../common';
 import { PhoneService } from '../phone';
+import { LOGIN_RATE_LIMIT, RateLimitService, subjectRateLimitKey } from '../rate-limit';
 import { TOKEN_TYPE } from './auth.constants';
 import type { AccountWithProfile } from './auth.repository';
 import { AuthRepository } from './auth.repository';
@@ -33,6 +35,13 @@ export class AuthService {
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
     private readonly phones: PhoneService,
+    /**
+     * Нужен ровно для одного: обнулить счётчик попыток входа после успешного.
+     * `@Optional()` — по доводу `MessageSender` в журнале групп (0037): наборам,
+     * которым лимиты не нужны, незачем тянуть Redis, а вход без лимитера
+     * работает ровно так же, просто счётчик доживает своё окно сам.
+     */
+    @Optional() private readonly rateLimit?: RateLimitService,
   ) {}
 
   /** Самостоятельная регистрация студента (ТЗ 3.1, 5.1). */
@@ -95,8 +104,32 @@ export class AuthService {
     }
 
     await this.repository.touchLastLogin(account.id);
+    await this.forgetFailedAttempts(phone);
 
     return this.startSession(account, context);
+  }
+
+  /**
+   * Обнуляет счётчик попыток входа по номеру (ТЗ 3.8). Без этого лимит
+   * работал бы против того, кого защищает: человек, вспомнивший пароль после
+   * пары опечаток, доживал бы окно с почти исчерпанным лимитом, а чужой
+   * перебор его номера закрывал бы ему вход насовсем.
+   *
+   * Ключ собирается **из нормализованного** номера — тем же выражением, что
+   * в guard'е: иначе счётчик заводился бы на один ключ, а гасился на другой.
+   *
+   * Сбой лимитера вход не роняет: он уже состоялся (приём отчёта Директору, 0037).
+   */
+  private async forgetFailedAttempts(phone: string): Promise<void> {
+    if (!this.rateLimit) return;
+
+    try {
+      await this.rateLimit.reset(subjectRateLimitKey(LOGIN_RATE_LIMIT.action, phone));
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Не удалось обнулить счётчик попыток входа: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**

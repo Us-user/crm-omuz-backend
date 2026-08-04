@@ -34,6 +34,10 @@ import type {
 } from 'src/performance/performance.repository';
 import { PerformanceRepository } from 'src/performance/performance.repository';
 import { PhoneModule } from 'src/phone/phone.module';
+// Лимиты частоты (Фаза 14) навешаны декоратором на эндпоинты auth,
+// поэтому guard должен быть в графе. Redis набору не нужен: без клиента
+// лимитер ничего не считает.
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
 import { RbacModule } from 'src/rbac/rbac.module';
 import { RbacRepository } from 'src/rbac/rbac.repository';
 import { MeGroupSortField, MeScheduleSortField } from 'src/student-cabinet/dto';
@@ -515,6 +519,7 @@ describe('Кабинет студента (e2e, хранилище в памят
         LoggerModule,
         MailerModule,
         PhoneModule,
+        RateLimitModule,
         AuthModule,
         // `RbacModule` — из-за контроллера успеваемости, который приезжает вместе
         // с `PerformanceModule` внутри кабинета: он закрыт правом каталога.

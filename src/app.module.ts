@@ -34,6 +34,7 @@ import { PerformanceModule } from './performance/performance.module';
 import { PhoneModule } from './phone/phone.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
+import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RbacAdminModule } from './rbac/rbac-admin.module';
 import { RbacModule } from './rbac/rbac.module';
 import { RedisModule } from './redis/redis.module';
@@ -59,6 +60,10 @@ import { TimetableModule } from './timetable/timetable.module';
     MailerModule,
     MessagingModule,
     PhoneModule,
+    // Ограничение частоты запросов (ТЗ 3.8). Порядка не требует: guard
+    // приезжает декоратором эндпоинта, а не глобально, — в отличие
+    // от журнала ниже.
+    RateLimitModule,
     // Журнал действий (ТЗ 3.6). Стоит **раньше `AuthModule`** осознанно:
     // глобальные guard'ы выполняются в порядке регистрации, и запись «кто
     // ломился в закрытый эндпоинт» возможна только если журнал успел

@@ -8,6 +8,14 @@ import { AuditAction } from '../audit/decorators/audit-action.decorator';
 import { NoAudit } from '../audit/decorators/no-audit.decorator';
 import { ApiDataResponse, ApiStandardErrors } from '../common';
 import {
+  LOGIN_RATE_LIMIT,
+  PASSWORD_FORGOT_RATE_LIMIT,
+  PASSWORD_RESET_RATE_LIMIT,
+  RateLimit,
+  REFRESH_RATE_LIMIT,
+  REGISTER_RATE_LIMIT,
+} from '../rate-limit';
+import {
   PASSWORD_RESET_MAX_ATTEMPTS,
   PASSWORD_RESET_MAX_REQUESTS_PER_HOUR,
   PASSWORD_RESET_TTL_SECONDS,
@@ -40,6 +48,7 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  @RateLimit(REGISTER_RATE_LIMIT)
   // Прав каталога у входа нет по устройству: журналу имя действия задаётся
   // явно, а «кто» берётся из выданной карточки аккаунта.
   @AuditAction('Auth.Register')
@@ -53,7 +62,7 @@ export class AuthController {
     description: 'Аккаунт создан',
     status: HttpStatus.CREATED,
   })
-  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.CONFLICT)
+  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.CONFLICT, HttpStatus.TOO_MANY_REQUESTS)
   register(@Body() dto: RegisterDto, @Req() request: Request): Promise<AuthResponseDto> {
     return this.auth.register(dto, requestContext(request));
   }
@@ -61,10 +70,21 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @RateLimit(LOGIN_RATE_LIMIT)
   @AuditAction('Auth.Login')
-  @ApiOperation({ summary: 'Вход по номеру телефона и паролю' })
+  @ApiOperation({
+    summary: 'Вход по номеру телефона и паролю',
+    description:
+      'Частота обращений ограничена по адресу и по номеру (ТЗ 3.8). Успешный вход ' +
+      'обнуляет счётчик номера, поэтому пара опечаток подряд входа не закрывает.',
+  })
   @ApiDataResponse(AuthResponseDto, { description: 'Токены выданы' })
-  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.TOO_MANY_REQUESTS,
+  )
   login(@Body() dto: LoginDto, @Req() request: Request): Promise<AuthResponseDto> {
     return this.auth.login(dto, requestContext(request));
   }
@@ -72,6 +92,7 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @RateLimit(REFRESH_RATE_LIMIT)
   // Единственный изменяющий запрос проекта, который действием не является:
   // пара токенов обновляется у каждого работающего человека раз в час
   // и говорит лишь о том, что вкладка не закрыта.
@@ -81,7 +102,12 @@ export class AuthController {
     description: 'Выдаёт новую пару и инвалидирует предъявленный refresh-токен (ротация, ТЗ 3.1).',
   })
   @ApiDataResponse(AuthResponseDto, { description: 'Выдана новая пара токенов' })
-  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.TOO_MANY_REQUESTS,
+  )
   refresh(@Body() dto: RefreshTokenDto, @Req() request: Request): Promise<AuthResponseDto> {
     return this.auth.refresh(dto, requestContext(request));
   }
@@ -114,6 +140,7 @@ export class AuthController {
   @Public()
   @Post('password/forgot')
   @HttpCode(HttpStatus.OK)
+  @RateLimit(PASSWORD_FORGOT_RATE_LIMIT)
   // Действующее лицо здесь останется пустым: ответ одинаков независимо от того,
   // существует ли аккаунт, — и журнал не должен выдавать то, что скрывает ответ.
   @AuditAction('Auth.PasswordForgot')
@@ -123,10 +150,12 @@ export class AuthController {
       `Отправляет на email ${String(PASSWORD_RESET_TTL_SECONDS / 60)}-минутный код из 6 цифр (ТЗ 3.1). ` +
       `Не более ${String(PASSWORD_RESET_MAX_REQUESTS_PER_HOUR)} запросов в час на аккаунт. ` +
       'Ответ одинаков независимо от того, существует ли аккаунт, — чтобы эндпоинт ' +
-      'нельзя было использовать для проверки, кто зарегистрирован.',
+      'нельзя было использовать для проверки, кто зарегистрирован. Сверх этого ' +
+      'частота обращений ограничена по адресу и по указанной почте (ТЗ 3.8); ' +
+      '429 срабатывает на любом адресе почты и потому существования аккаунта не выдаёт.',
   })
   @ApiDataResponse(ForgotPasswordResponseDto, { description: 'Запрос принят' })
-  @ApiStandardErrors(HttpStatus.BAD_REQUEST)
+  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.TOO_MANY_REQUESTS)
   forgotPassword(@Body() dto: ForgotPasswordDto): Promise<ForgotPasswordResponseDto> {
     return this.passwordReset.forgot(dto);
   }
@@ -134,6 +163,7 @@ export class AuthController {
   @Public()
   @Post('password/reset')
   @HttpCode(HttpStatus.OK)
+  @RateLimit(PASSWORD_RESET_RATE_LIMIT)
   @AuditAction('Auth.PasswordReset')
   @ApiOperation({
     summary: 'Смена пароля по коду из письма',
@@ -143,7 +173,12 @@ export class AuthController {
       'аккаунта отзываются — войти нужно заново.',
   })
   @ApiDataResponse(ResetPasswordResponseDto, { description: 'Пароль изменён' })
-  @ApiStandardErrors(HttpStatus.BAD_REQUEST, HttpStatus.FORBIDDEN, HttpStatus.UNPROCESSABLE_ENTITY)
+  @ApiStandardErrors(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+    HttpStatus.TOO_MANY_REQUESTS,
+  )
   resetPassword(@Body() dto: ResetPasswordDto): Promise<ResetPasswordResponseDto> {
     return this.passwordReset.reset(dto);
   }

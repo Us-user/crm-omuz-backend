@@ -78,6 +78,32 @@ export class AppConfigService {
     return this.get('SCHEDULED_TASKS_ENABLED');
   }
 
+  /** Включено ли ограничение частоты запросов на auth и сброс пароля (ТЗ 3.8). */
+  get rateLimitEnabled(): boolean {
+    return this.get('RATE_LIMIT_ENABLED');
+  }
+
+  /**
+   * Значение express `trust proxy` в том виде, в каком его принимает express:
+   * `true`/`false`, число хопов или список адресов. `undefined` означает
+   * «не задано» — настройку express не трогаем и остаёмся на его умолчании.
+   */
+  get trustProxy(): boolean | number | string | undefined {
+    const raw = this.get('TRUST_PROXY')?.trim();
+    if (!raw) return undefined;
+
+    const lowered = raw.toLowerCase();
+    if (lowered === 'true') return true;
+    if (lowered === 'false') return false;
+
+    // Число хопов: `TRUST_PROXY=1` — доверять ровно ближайшему прокси.
+    const hops = Number(raw);
+    if (Number.isInteger(hops) && hops >= 0) return hops;
+
+    // Всё прочее — список адресов и подсетей; express разбирает его сам.
+    return raw;
+  }
+
   get swaggerEnabled(): boolean {
     return this.get('SWAGGER_ENABLED');
   }

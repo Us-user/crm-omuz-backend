@@ -6,6 +6,7 @@ export * from './dto/paginated';
 export * from './dto/pagination-query.dto';
 export * from './errors/business-rule.exception';
 export * from './errors/error-code.enum';
+export * from './errors/too-many-requests.exception';
 export * from './filters/all-exceptions.filter';
 export * from './interceptors/raw-response.decorator';
 export * from './interceptors/transform-response.interceptor';

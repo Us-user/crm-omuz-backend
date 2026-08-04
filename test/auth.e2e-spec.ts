@@ -25,6 +25,11 @@ import type { MailMessage } from 'src/mailer';
 import { MailerService } from 'src/mailer';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
+import { RedisModule } from 'src/redis/redis.module';
+import { RedisService } from 'src/redis/redis.service';
+
+import { InMemoryRedis } from './support/in-memory-redis';
 
 /**
  * Полный HTTP-путь Auth: DTO-валидация → guard → сервис → интерцептор/фильтр.
@@ -245,15 +250,32 @@ describe('Auth (e2e, хранилище в памяти)', () => {
   let app: INestApplication;
   let repository: InMemoryAuthRepository;
   let mailer: RecordingMailer;
+  let redis: InMemoryRedis;
 
   const url = (path: string) => `/api/v1/auth/${path}`;
 
   beforeEach(async () => {
     repository = new InMemoryAuthRepository();
     mailer = new RecordingMailer();
+    // Счётчики лимитов заводятся заново на каждый тест: этот набор проверяет
+    // сценарии auth, а не лимиты (их проверяет `rate-limit.e2e-spec.ts`),
+    // и одно правило не должно закрывать вход соседнему тесту.
+    redis = new InMemoryRedis();
 
     const moduleRef = await Test.createTestingModule({
-      imports: [AppConfigModule, LoggerModule, MailerModule, PhoneModule, AuthModule],
+      imports: [
+        AppConfigModule,
+        LoggerModule,
+        MailerModule,
+        PhoneModule,
+        // Redis приносится ради лимитов и тут же подменяется счётчиком
+        // в памяти: настоящий клиент набору не нужен, а без клиента вовсе
+        // лимитер ничего не считал бы — и сценарии auth проверялись бы
+        // в конфигурации, отличной от прода.
+        RedisModule,
+        RateLimitModule,
+        AuthModule,
+      ],
       providers: [
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
         { provide: APP_INTERCEPTOR, useClass: TransformResponseInterceptor },
@@ -263,6 +285,8 @@ describe('Auth (e2e, хранилище в памяти)', () => {
       .useValue(repository)
       .overrideProvider(MailerService)
       .useValue(mailer)
+      .overrideProvider(RedisService)
+      .useValue(redis.asRedisService())
       .compile();
 
     app = moduleRef.createNestApplication({ logger: false });

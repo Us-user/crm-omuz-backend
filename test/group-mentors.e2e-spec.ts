@@ -23,6 +23,10 @@ import type {
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+// Лимиты частоты (Фаза 14) навешаны декоратором на эндпоинты auth,
+// поэтому guard должен быть в графе. Redis набору не нужен: без клиента
+// лимитер ничего не считает.
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
 import { RbacModule } from 'src/rbac/rbac.module';
 import { RbacRepository } from 'src/rbac/rbac.repository';
 import { buildOpenApiDocument } from 'src/swagger';
@@ -238,6 +242,7 @@ describe('Менторы группы (e2e, хранилище в памяти)'
         MailerModule,
         PhoneModule,
         // AuthModule нужен целиком: он приносит глобальный `JwtAuthGuard`.
+        RateLimitModule,
         AuthModule,
         RbacModule,
         GroupMentorsModule,

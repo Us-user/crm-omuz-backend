@@ -33,6 +33,10 @@ import { CouponsModule } from 'src/coupons/coupons.module';
 import { LoggerModule } from 'src/logger/logger.module';
 import { MailerModule } from 'src/mailer/mailer.module';
 import { PhoneModule } from 'src/phone/phone.module';
+// Лимиты частоты (Фаза 14) навешаны декоратором на эндпоинты auth,
+// поэтому guard должен быть в графе. Redis набору не нужен: без клиента
+// лимитер ничего не считает.
+import { RateLimitModule } from 'src/rate-limit/rate-limit.module';
 import { RbacModule } from 'src/rbac/rbac.module';
 import { RbacRepository } from 'src/rbac/rbac.repository';
 import { buildOpenApiDocument } from 'src/swagger';
@@ -260,6 +264,7 @@ describe('Журнал действий (ТЗ 3.6, 5.15)', () => {
         // выполняются в порядке регистрации, а журнал обязан подписаться
         // на ответ раньше, чем `JwtAuthGuard` откажет запросу без токена.
         AuditModule,
+        RateLimitModule,
         AuthModule,
         RbacModule,
         CouponsModule,
